@@ -16,12 +16,15 @@ invisible(lapply(packages, library, character.only = TRUE))
 # Remove unneeded variables
 rm(packages, installed_packages)
 
-# Setting file paths ----
+# Setting file paths and the Census API key----
 
 puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp"
 output_file_path_for_puma_shp <- "hidden-housing-costs/outputs/hidden_housing_costs.shp"
 
 output_file_path_for_cleaned_data <- "hidden-housing-costs/outputs/hidden_housing_costs.xlsx"
+
+# Enter your own Census API key here. Visit this link if you do not yet have a Census API key: https://api.census.gov/data/key_signup.html
+census_api_key <- "f8d6fbb724ef6f8e8004220898ac5ed24324b814"
 
 # Reading in the empty shape files (ignore if not outputting a shape file) ----
 
@@ -51,9 +54,9 @@ data <- get_pums(
   variables_filter = list(TEN = 1:2),
   puma = 'all', 
   rep_weights = 'none',
-  recode = TRUE,
-  show_call = TRUE,
-  key = "6dd2c4143fc5f308c1120021fb663c15409f3757"
+  recode = T,
+  show_call = T,
+  key = census_api_key
 )
 
 # Your code to clean/analyze PUMS data ----
