@@ -16,7 +16,7 @@ invisible(lapply(packages, library, character.only = TRUE))
 # Remove unneeded variables
 rm(packages, installed_packages)
 
-# Setting file paths and the Census API key----
+# Setting file paths and the Census API key ----
 
 puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp"
 output_file_path_for_puma_shp <- "hidden-housing-costs/outputs/hidden_housing_costs.shp"
