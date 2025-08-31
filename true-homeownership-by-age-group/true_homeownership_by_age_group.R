@@ -28,7 +28,7 @@ output_file_path_for_cleaned_data <- "true-homeownership-by-age-group/outputs/tr
 
 output_file_path_for_puma_shp <- "C:/Users/ianwe/Downloads/ArcGIS projects for github/pums/true-homeownership-by-age-group/shapefiles/true_homeownership_by_age_group.shp" # Change this to a file path for where you would like to output a cleaned shape file
 
-# Reading in the empty shape files (ignore if not outputting a shape file) ----
+# Reading in the empty shape files ----
 
 puma_shp <- st_read(puma_shp_file_path) %>%
   rename(STATE = STATEFP20, PUMA = PUMACE20, STATE_NAME = ST_NAME20, PUMA_NAME = NAMELSAD20)
@@ -48,22 +48,17 @@ state_selection <- 'MA' # or a vector of state FIPS codes --> c('CA', 'CO'), or 
 puma_selection <- 'all' # Setting this to 'all overrides the argument for 'state' (i.e. all PUMAs' data will be read in regardless of the 'state_selection')
 which_replicate_weights_to_load <- 'none' # or one of the following: 'housing', 'person', 'both'
 
-# Set the variables to pull from PUMS data; add to this vector or create your own!
-pums_variables_of_interest <- c('SERIALNO', 'RT', 'PWGTP', 'AGEP', 'HINCP', 'PINCP', 'TEN', 'BLD', 'HHT', 'HHLDRAGEP', 'SMOCP', 'OCPIP','GRNTP', 'GRPIP', 'SCH', 'SCHG', 'HUPAC', 'RELSHIPP')
+pums_variables_of_interest <- c('SERIALNO', 'RT', 'PWGTP', 'AGEP', 'HINCP', 'PINCP', 'TEN', 'BLD', 'HHT', 'SMOCP', 'OCPIP','GRNTP', 'GRPIP', 'SCH', 'SCHG', 'HUPAC', 'RELSHIPP')
 
 
 # Reading in a variable list for the PUMS_data_year in question ----
 
-PUMS_data_year_for_variable_pull <- 2023
-
 pums_variables <- tidycensus::pums_variables
 
 pums_variables <- pums_variables %>%
-  filter(survey == PUMS_survey_type & year == PUMS_data_year_for_variable_pull) %>%
+  filter(survey == PUMS_survey_type & year == PUMS_data_year) %>%
   distinct(var_code, .keep_all = TRUE) %>%
   select(var_code:val_max, recode:val_na)
-
-# write.xlsx(pums_variables, paste0("R:/ADHOC-JBREC/Ian-K/API Template Scripts/PUMS Data/pums_variables_", PUMS_data_year_for_variable_pull, ".xlsx"))
 
 # Reading in PUMS data ----
 
@@ -75,7 +70,8 @@ data <- get_pums(
   state = state_selection,
   puma = puma_selection,
   rep_weights = which_replicate_weights_to_load,
-  variables_filter = list(TYPEHUGQ = 1, SCH = 1, AGEP = 18:200), # Filter for housing unit occupants
+  # Filter for housing unit occupants, whom are not attending school, and are 18+
+  variables_filter = list(TYPEHUGQ = 1, SCH = 1, AGEP = 18:200), 
   recode = T, 
   show_call = T
 ) 
@@ -90,8 +86,7 @@ data_cleaned <- data %>%
 
 data_cleaned <- data_cleaned %>%
   group_by(STATE, STATE_NAME, PUMA, PUMA_NAME, SERIALNO) %>%
-  summarize(HHLDRAGEP = mean(HHLDRAGEP, na.rm = T),
-            AGEP,
+  summarize(AGEP,
             TEN_label,
             RELSHIPP_label,
             PWGTP) %>%
@@ -99,7 +94,7 @@ data_cleaned <- data_cleaned %>%
 
 data_cleaned <- data_cleaned %>%
   mutate(
-    owner_renter_status = case_when(
+    living_status = case_when(
         RELSHIPP_label %in% c('Biological son or daughter', 'Adopted son or daughter', 
                               'Stepson or stepdaughter', 'Grandchild', 
                               'Son-in-law or daughter-in-law', 'Foster child') ~ 'lives_with_parents',
@@ -118,37 +113,37 @@ data_cleaned <- data_cleaned %>%
   )
 
 data_final_puma <- data_cleaned %>%
-  group_by(STATE, STATE_NAME, PUMA, PUMA_NAME, owner_renter_status, age_group) %>%
+  group_by(STATE, STATE_NAME, PUMA, PUMA_NAME, living_status, age_group) %>%
   summarize(pop = sum(PWGTP, na.rm = TRUE), .groups = "drop") %>%
   ungroup() %>%
   group_by(STATE, STATE_NAME, PUMA, PUMA_NAME, age_group) %>%
   mutate(pop_sh = pop / sum(pop, na.rm = TRUE)) %>%
   ungroup() %>%
-  pivot_wider(id_cols = c(STATE:PUMA_NAME, age_group), values_from = pop_sh, names_from = owner_renter_status) %>%
+  pivot_wider(id_cols = c(STATE:PUMA_NAME, age_group), values_from = pop_sh, names_from = living_status) %>%
   mutate(lives_with_parents = if_else(is.na(lives_with_parents), 0, lives_with_parents),
          does_not_live_with_parents = if_else(is.na(does_not_live_with_parents), 0, does_not_live_with_parents)) %>%
   select(PUMA_NAME, PUMA, STATE_NAME, STATE, everything())
 
 data_final_state <- data_cleaned %>%
-  group_by(STATE, STATE_NAME, owner_renter_status, age_group) %>%
+  group_by(STATE, STATE_NAME, living_status, age_group) %>%
   summarize(pop = sum(PWGTP, na.rm = TRUE)) %>%
   ungroup() %>%
   group_by(STATE, STATE_NAME, age_group) %>%
   mutate(pop_sh = pop / sum(pop, na.rm = TRUE)) %>%
   ungroup() %>%
-  pivot_wider(id_cols = c(STATE:STATE_NAME, age_group), values_from = pop_sh, names_from = owner_renter_status) %>%
+  pivot_wider(id_cols = c(STATE:STATE_NAME, age_group), values_from = pop_sh, names_from = living_status) %>%
   mutate(lives_with_parents = if_else(is.na(lives_with_parents), 0, lives_with_parents),
          does_not_live_with_parents = if_else(is.na(does_not_live_with_parents), 0, does_not_live_with_parents)) %>%
   select(STATE_NAME, STATE, everything())
 
 data_final_national <- data_cleaned %>%
-  group_by(owner_renter_status, age_group) %>%
+  group_by(living_status, age_group) %>%
   summarize(pop = sum(PWGTP, na.rm = TRUE)) %>%
   ungroup() %>%
   group_by(age_group) %>%
   mutate(pop_sh = pop / sum(pop, na.rm = TRUE)) %>%
   ungroup() %>%
-  pivot_wider(id_cols = age_group, values_from = pop_sh, names_from = owner_renter_status) %>%
+  pivot_wider(id_cols = age_group, values_from = pop_sh, names_from = living_status) %>%
   mutate(lives_with_parents = if_else(is.na(lives_with_parents), 0, lives_with_parents),
          does_not_live_with_parents = if_else(is.na(does_not_live_with_parents), 0, does_not_live_with_parents))
 
@@ -161,7 +156,7 @@ dataset_list <- list('PUMA Data' = data_final_puma,
 
 write.xlsx(dataset_list, output_file_path_for_cleaned_data)
 
-# Outputting spatial data (IGNORE IF NOT OUTPUTTING A SHAPE FILE) ----
+# Outputting spatial data ----
 
 data_final_spatial <- data_final_puma %>%
   left_join(puma_geo, by = c('PUMA', 'STATE')) %>%
