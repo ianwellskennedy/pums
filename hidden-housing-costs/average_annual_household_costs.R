@@ -18,10 +18,12 @@ rm(packages, installed_packages)
 
 # Setting file paths and the Census API key ----
 
-puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp"
-output_file_path_for_puma_shp <- "hidden-housing-costs/outputs/hidden_housing_costs.shp"
+acs_year <- 2024
 
-output_file_path_for_cleaned_data <- "hidden-housing-costs/outputs/hidden_housing_costs.xlsx"
+puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp"
+output_file_path_for_puma_shp <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".shp")
+
+output_file_path_for_cleaned_data <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".xlsx")
 
 # Enter your own Census API key here. Visit this link if you do not yet have a Census API key: https://api.census.gov/data/key_signup.html
 census_api_key <- "f8d6fbb724ef6f8e8004220898ac5ed24324b814"
@@ -38,6 +40,13 @@ puma_info <- puma_shp %>%
   select(STATE, STATE_NAME, PUMA, PUMA_NAME) %>%
   st_drop_geometry()
 
+# Specifying parameters/variables for PUMS data ----
+
+PUMS_survey_type <- 'acs1' # or 'acs5' for 5-year estimates
+state_selection <- 'RI' # or a vector of state FIPS codes --> c('CA', 'CO'), or 'all'
+puma_selection <- 'all' # Setting this to 'all overrides the argument for 'state' (i.e. all PUMAs' data will be read in regardless of the 'state_selection')
+which_replicate_weights_to_load <- 'none' # or one of the following: 'housing', 'person', 'both'
+
 # Reading in PUMS data ----
 
 # Set the variables to pull from PUMS data; add to this vector or create your own!
@@ -48,12 +57,12 @@ pums_variables_of_interest <- c('SERIALNO', 'PUMA','RT', 'WGTP', 'ADJHSG', 'TYPE
 # Retrieve the data
 data <- get_pums(
   variables = pums_variables_of_interest,
-  year = 2023, 
-  survey = 'acs1', 
-  state = 'RI',
-  variables_filter = list(TEN = 1:2),
-  puma = 'all', 
-  rep_weights = 'none',
+  year = acs_year, 
+  survey = PUMS_survey_type, 
+  state = state_selection,
+  variables_filter = list(TEN = 1:2), # Filter for owned households
+  puma = puma_selection, 
+  rep_weights = which_replicate_weights_to_load,
   recode = T,
   show_call = T,
   key = census_api_key
@@ -76,6 +85,7 @@ data_cleaned <- data %>%
   distinct(SERIALNO, .keep_all = T)
 
 data_final <- data_cleaned %>%
+  rename(STATE = ST) %>%
   filter(BLD_label %in% c('One-family house detached', 'One-family house attached')) %>%
   group_by(STATE, PUMA) %>%
   summarize(
@@ -98,17 +108,18 @@ data_final <- data_final %>%
   mutate(PUMA_NAME = str_remove(PUMA_NAME, ' PUMA')) %>%
   select(STATE, STATE_NAME, PUMA, PUMA_NAME, everything()) 
 
-write.xlsx(data_final, output_file_path_for_cleaned_data)
 
+# Output tabular data ----
+
+write.xlsx(data_final, output_file_path_for_cleaned_data)
 
 rm(data_cleaned, pums_variables_of_interest, puma_info, puma_shp_file_path, output_file_path_for_cleaned_data)
 
 # Outputting spatial data (ignore if not outputting a shape file) ----
 
-data_final <- data_final %>%
-  left_join(puma_geo, by = c('STATE', 'PUMA')) 
-
-data_final_spatial <- st_as_sf(data_final)
+data_final_spatial <- data_final %>%
+  left_join(puma_geo, by = c('STATE', 'PUMA')) %>%
+  st_as_sf()
 
 arc.check_product()
 
