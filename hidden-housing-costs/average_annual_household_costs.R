@@ -1,7 +1,7 @@
 # Packages ----
 
 # Set the package names to read in
-packages <- c("tidyverse", "readxl", "tidycensus", "sf", "openxlsx", "arcgisbinding")
+packages <- c("tidyverse", "readxl", "tidycensus", "sf", "openxlsx", "arcgisbinding", "spatstat")
 
 # Install packages that are not yet installed
 installed_packages <- packages %in% rownames(installed.packages())
@@ -26,7 +26,7 @@ output_file_path_for_puma_shp <- paste0("hidden-housing-costs/outputs/hidden_hou
 output_file_path_for_cleaned_data <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".xlsx")
 
 # Enter your own Census API key here. Visit this link if you do not yet have a Census API key: https://api.census.gov/data/key_signup.html
-census_api_key <- "f8d6fbb724ef6f8e8004220898ac5ed24324b814"
+census_api_key <- "6dd2c4143fc5f308c1120021fb663c15409f3757"
 
 # Reading in the empty shape files (ignore if not outputting a shape file) ----
 
@@ -46,6 +46,7 @@ PUMS_survey_type <- 'acs1' # or 'acs5' for 5-year estimates
 state_selection <- 'RI' # or a vector of state FIPS codes --> c('CA', 'CO'), or 'all'
 puma_selection <- 'all' # Setting this to 'all overrides the argument for 'state' (i.e. all PUMAs' data will be read in regardless of the 'state_selection')
 which_replicate_weights_to_load <- 'none' # or one of the following: 'housing', 'person', 'both'
+census_api_key <- 'f8d6fbb724ef6f8e8004220898ac5ed24324b814' # Provide the Census API Key, if others are running this you will need to get a Census API key here: https://api.census.gov/data/key_signup.html
 
 # Reading in PUMS data ----
 
@@ -71,6 +72,14 @@ data <- get_pums(
 # Your code to clean/analyze PUMS data ----
 
 data_cleaned <- data %>%
+  mutate(ELEP = as.numeric(ELEP),
+         WATP = as.numeric(WATP),
+         CONP = as.numeric(CONP),
+         GASP = as.numeric(GASP),
+         FULP = as.numeric(FULP),
+         VALP = as.numeric(VALP),
+         INSP = as.numeric(INSP),
+         TAXAMT = as.numeric(TAXAMT)) %>%
   mutate(
     # ELEP == 2 (No charge or electricity not used)
     ELEP_recode = if_else(ELEP == 2, 0, ELEP*12),
@@ -80,13 +89,13 @@ data_cleaned <- data %>%
     # GASP == 3 (No charge or gas not used)
     GASP_recode = if_else(GASP == 3, 0, GASP*12),
     # FULP == 2 (No charge or fuel other than gas or electricity not used)
-    FULP_recode = if_else(FULP == 2, 0, FULP)
+    FULP_recode = if_else(FULP == 2, 0, FULP),
+    ins_vs_val = INSP / VALP
   ) %>%
   distinct(SERIALNO, .keep_all = T)
 
 data_final <- data_cleaned %>%
-  rename(STATE = ST) %>%
-  filter(BLD_label %in% c('One-family house detached', 'One-family house attached')) %>%
+  filter(BLD %in% c('2','3')) %>%
   group_by(STATE, PUMA) %>%
   summarize(
     sf_hh = sum(WGTP, na.rm = T),
@@ -96,7 +105,9 @@ data_final <- data_cleaned %>%
     avg_elec = weighted.mean(ELEP_recode, w = WGTP, na.rm = T),
     avg_wat = weighted.mean(WATP_recode, w = WGTP, na.rm = T),
     avg_gas = weighted.mean(GASP_recode, w = WGTP, na.rm = T),
-    avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T)
+    avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T),
+    med_ins_rate = weighted.median(INSP/VALP, na.rm = T)*100,
+    avg_ins_rate = weighted.mean(ins_vs_val, na.rm = T)*100    
     ) %>%
   ungroup()
 
