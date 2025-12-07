@@ -18,12 +18,14 @@ rm(packages, installed_packages)
 
 # Setting file paths and the Census API key ----
 
+# Set the year to pull ACS data in for
 acs_year <- 2024
 
-puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp"
-output_file_path_for_puma_shp <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".shp")
+puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp" # Set the file path to the PUMA level .shp file. This file can be downloaded here: https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_puma20_500k.zip
 
-output_file_path_for_cleaned_data <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".xlsx")
+output_file_path_for_puma_shp <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".shp") # Set the file path to output the .shp file to.
+
+output_file_path_for_cleaned_data <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".xlsx") # Set the file path to output the tabular file to.
 
 # Enter your own Census API key here. Visit this link if you do not yet have a Census API key: https://api.census.gov/data/key_signup.html
 census_api_key <- "6dd2c4143fc5f308c1120021fb663c15409f3757"
@@ -95,7 +97,7 @@ data_cleaned <- data %>%
   distinct(SERIALNO, .keep_all = T)
 
 data_final <- data_cleaned %>%
-  filter(BLD %in% c('2','3')) %>%
+  filter(BLD %in% c('02','03')) %>%
   group_by(STATE, PUMA) %>%
   summarize(
     sf_hh = sum(WGTP, na.rm = T),
@@ -118,7 +120,6 @@ data_final <- data_final %>%
   left_join(puma_info, by = c('PUMA', 'STATE')) %>%
   mutate(PUMA_NAME = str_remove(PUMA_NAME, ' PUMA')) %>%
   select(STATE, STATE_NAME, PUMA, PUMA_NAME, everything()) 
-
 
 # Output tabular data ----
 
