@@ -97,6 +97,7 @@ data_cleaned <- data %>%
   distinct(SERIALNO, .keep_all = T)
 
 data_final <- data_cleaned %>%
+  rename(STATE = ST) %>%
   filter(BLD %in% c('02','03')) %>%
   group_by(STATE, PUMA) %>%
   summarize(
