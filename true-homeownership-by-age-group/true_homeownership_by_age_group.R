@@ -24,9 +24,9 @@ census_api_key <- "f8d6fbb724ef6f8e8004220898ac5ed24324b814" # Enter your Census
 
 puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp"
 
-output_file_path_for_cleaned_data <- "true-homeownership-by-age-group/outputs/true_homeownership_by_age_group.xlsx" # Change this to a file path where you would like to output a cleaned Excel file.
+output_file_path_for_cleaned_data <- "true-homeownership-by-age-group/outputs/true_homeownership_by_age_group_2024.xlsx" # Change this to a file path where you would like to output a cleaned Excel file.
 
-output_file_path_for_puma_shp <- "C:/Users/ianwe/Downloads/ArcGIS projects for github/pums/true-homeownership-by-age-group/shapefiles/true_homeownership_by_age_group.shp" # Change this to a file path for where you would like to output a cleaned shape file
+output_file_path_for_puma_shp <- "C:/Users/ianwe/Downloads/ArcGIS projects for github/pums/true-homeownership-by-age-group/shapefiles/true_homeownership_by_age_group_2024.shp" # Change this to a file path for where you would like to output a cleaned shape file
 
 # Reading in the empty shape files ----
 
@@ -42,14 +42,13 @@ puma_info <- puma_shp %>%
 
 # Specifying parameters/variables for PUMS data ----
 
-PUMS_data_year <- 2023 # Set the year to pull for PUMS data
+PUMS_data_year <- 2024 # Set the year to pull for PUMS data
 PUMS_survey_type <- 'acs1' # or 'acs5' for 5-year estimates
 state_selection <- 'MA' # or a vector of state FIPS codes --> c('CA', 'CO'), or 'all'
 puma_selection <- 'all' # Setting this to 'all overrides the argument for 'state' (i.e. all PUMAs' data will be read in regardless of the 'state_selection')
 which_replicate_weights_to_load <- 'none' # or one of the following: 'housing', 'person', 'both'
 
 pums_variables_of_interest <- c('SERIALNO', 'RT', 'PWGTP', 'AGEP', 'HINCP', 'PINCP', 'TEN', 'BLD', 'HHT', 'SMOCP', 'OCPIP','GRNTP', 'GRPIP', 'SCH', 'SCHG', 'HUPAC', 'RELSHIPP')
-
 
 # Reading in a variable list for the PUMS_data_year in question ----
 
@@ -87,18 +86,16 @@ data_cleaned <- data %>%
 data_cleaned <- data_cleaned %>%
   group_by(STATE, STATE_NAME, PUMA, PUMA_NAME, SERIALNO) %>%
   summarize(AGEP,
-            TEN_label,
-            RELSHIPP_label,
+            TEN,
+            RELSHIPP,
             PWGTP) %>%
   ungroup()
 
 data_cleaned <- data_cleaned %>%
   mutate(
     living_status = case_when(
-        RELSHIPP_label %in% c('Biological son or daughter', 'Adopted son or daughter', 
-                              'Stepson or stepdaughter', 'Grandchild', 
-                              'Son-in-law or daughter-in-law', 'Foster child') ~ 'lives_with_parents',
-      TRUE ~ 'does_not_live_with_parents'
+        RELSHIPP %in% c('25', '26', '27', '30', '32', '35') ~ 'lives_with_parents',
+        TRUE ~ 'does_not_live_with_parents'
     ),
     age_group = case_when(
       AGEP >= 18 & AGEP <= 24 ~ '18_24',

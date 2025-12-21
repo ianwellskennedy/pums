@@ -92,13 +92,14 @@ data_cleaned <- data %>%
     GASP_recode = if_else(GASP == 3, 0, GASP*12),
     # FULP == 2 (No charge or fuel other than gas or electricity not used)
     FULP_recode = if_else(FULP == 2, 0, FULP),
-    ins_vs_val = INSP / VALP
+    ins_rate = INSP / VALP,
+    prop_tax_rate = TAXAMT / VALP,
+    
   ) %>%
-  distinct(SERIALNO, .keep_all = T)
+  distinct(SERIALNO, .keep_all = T) %>%
+  filter(BLD %in% c('2','3'))
 
 data_final <- data_cleaned %>%
-  rename(STATE = ST) %>%
-  filter(BLD %in% c('02','03')) %>%
   group_by(STATE, PUMA) %>%
   summarize(
     sf_hh = sum(WGTP, na.rm = T),
@@ -109,8 +110,10 @@ data_final <- data_cleaned %>%
     avg_wat = weighted.mean(WATP_recode, w = WGTP, na.rm = T),
     avg_gas = weighted.mean(GASP_recode, w = WGTP, na.rm = T),
     avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T),
-    med_ins_rate = weighted.median(INSP/VALP, na.rm = T)*100,
-    avg_ins_rate = weighted.mean(ins_vs_val, na.rm = T)*100    
+    med_ins_rate = weighted.median(ins_rate, na.rm = T)*100,
+    avg_ins_rate = weighted.mean(ins_rate, na.rm = T)*100,
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T)*100,
+    avg_tax_rate = weighted.mean(prop_tax_rate, na.rm = T)*100
     ) %>%
   ungroup()
 
