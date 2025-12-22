@@ -1,7 +1,7 @@
 # Packages ----
 
 # Set the package names to read in
-packages <- c("tidyverse", "readxl", "tidycensus", "sf", "openxlsx", "arcgisbinding", "spatstat")
+packages <- c("tidyverse", "readxl", "tidycensus", "sf", "openxlsx", "arcgisbinding", "spatstat", "zoo")
 
 # Install packages that are not yet installed
 installed_packages <- packages %in% rownames(installed.packages())
@@ -23,9 +23,19 @@ acs_year <- 2024
 
 puma_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2023/PUMAs/cb_2020_us_puma20_500k.shp" # Set the file path to the PUMA level .shp file. This file can be downloaded here: https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_puma20_500k.zip
 
+cbsa_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2024/CBSAs/cb_2024_us_cbsa_5m.shp"
+
+puma_cbsa_crossover_file_path <- "C:/Users/ianwe/Downloads/shapefiles/crossover_files/puma_2020_to_cbsa_2023.xlsx"
+
+zillow_metro_data_file_path <- "C:/Users/ianwe/Downloads/Metro_total_monthly_payment_downpayment_0.10_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+
+zillow_metro_codes_file_path <- "C:/Users/ianwe/Downloads/github/zillow/inputs/zillow_metro_crosswalk.xlsx"
+
 output_file_path_for_puma_shp <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".shp") # Set the file path to output the .shp file to.
 
 output_file_path_for_cleaned_data <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".xlsx") # Set the file path to output the tabular file to.
+
+output_file_path_for_metro_affordablity_data <- paste0("hidden-housing-costs/outputs/metro_housing_affordability_data_", acs_year, ".xlsx") # Set the file path to output the tabular file to.
 
 # Enter your own Census API key here. Visit this link if you do not yet have a Census API key: https://api.census.gov/data/key_signup.html
 census_api_key <- "6dd2c4143fc5f308c1120021fb663c15409f3757"
@@ -42,6 +52,14 @@ puma_info <- puma_shp %>%
   select(STATE, STATE_NAME, PUMA, PUMA_NAME) %>%
   st_drop_geometry()
 
+cbsa_shp <- st_read(cbsa_shp_file_path) %>%
+  rename(CBSA = CBSAFP, CBSA_NAME = NAME)
+
+cbsa_geo <- cbsa_shp %>%
+  select(CBSA, CBSA_NAME, geometry)
+
+cbsa_info <- cbsa_geo %>%
+  st_drop_geometry()
 # Specifying parameters/variables for PUMS data ----
 
 PUMS_survey_type <- 'acs1' # or 'acs5' for 5-year estimates
@@ -49,6 +67,28 @@ state_selection <- 'RI' # or a vector of state FIPS codes --> c('CA', 'CO'), or 
 puma_selection <- 'all' # Setting this to 'all overrides the argument for 'state' (i.e. all PUMAs' data will be read in regardless of the 'state_selection')
 which_replicate_weights_to_load <- 'none' # or one of the following: 'housing', 'person', 'both'
 census_api_key <- 'f8d6fbb724ef6f8e8004220898ac5ed24324b814' # Provide the Census API Key, if others are running this you will need to get a Census API key here: https://api.census.gov/data/key_signup.html
+
+# Reading in crossover file ----
+
+puma_to_cbsa_crossover_file <- read.xlsx(puma_cbsa_crossover_file_path)
+names(puma_to_cbsa_crossover_file) <- toupper(names(puma_to_cbsa_crossover_file))
+
+puma_to_cbsa_crossover_file <- puma_to_cbsa_crossover_file %>%
+  select(-c(HOUSING_UNITS_2020)) %>%
+  mutate(
+    PUMA = as.character(PUMA),
+    STATE = as.character(STATE),
+    ALLOC_FACTOR = as.numeric(ALLOC_FACTOR),
+    PUMA = case_when(
+      str_length(PUMA) == 3 ~ paste0("00", PUMA),
+      str_length(PUMA) == 4 ~ paste0("0", PUMA),
+      T ~ PUMA
+    ),
+    STATE = case_when(
+      str_length(STATE) == 1 ~ paste0("0", STATE),
+      T ~ STATE
+    )
+    )
 
 # Reading in PUMS data ----
 
@@ -71,7 +111,7 @@ data <- get_pums(
   key = census_api_key
 )
 
-# Your code to clean/analyze PUMS data ----
+# Clean PUMS data ----
 
 data_cleaned <- data %>%
   mutate(ELEP = as.numeric(ELEP),
@@ -98,6 +138,115 @@ data_cleaned <- data %>%
   ) %>%
   distinct(SERIALNO, .keep_all = T) %>%
   filter(BLD %in% c('2','3'))
+
+# Prep final data for output ----
+
+data_cleaned <- data_cleaned %>%
+  group_by(STATE, PUMA) %>%
+  summarize(
+    sf_hh = sum(WGTP, na.rm = T),
+    avg_val = weighted.mean(VALP, w = WGTP, na.rm = T),
+    avg_ins = weighted.mean(INSP, w = WGTP, na.rm = T),
+    avg_tax = weighted.mean(TAXAMT, w = WGTP, na.rm = T),
+    avg_elec = weighted.mean(ELEP_recode, w = WGTP, na.rm = T),
+    avg_wat = weighted.mean(WATP_recode, w = WGTP, na.rm = T),
+    avg_gas = weighted.mean(GASP_recode, w = WGTP, na.rm = T),
+    avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T),
+    med_ins_rate = weighted.median(ins_rate, na.rm = T)*100,
+    avg_ins_rate = weighted.mean(ins_rate, na.rm = T)*100,
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T)*100,
+    avg_tax_rate = weighted.mean(prop_tax_rate, na.rm = T)*100
+  ) %>%
+  ungroup()
+
+data_cleaned <- data_cleaned %>%
+  mutate(avg_total = rowSums(select(., avg_ins, avg_tax, avg_elec, avg_wat, avg_gas, avg_fuel), na.rm = TRUE))
+
+data_final <- data_cleaned %>%
+  left_join(puma_info, by = c('PUMA', 'STATE')) %>%
+  mutate(PUMA_NAME = str_remove(PUMA_NAME, ' PUMA')) %>%
+  select(STATE, STATE_NAME, PUMA, PUMA_NAME, everything()) 
+
+# Generate metro level data ----
+
+cbsa_data_final <- data_final %>%
+  left_join(puma_to_cbsa_crossover_file, by = c('PUMA', 'STATE')) %>%
+  mutate(sf_hh_cbsa = sf_hh * ALLOC_FACTOR)
+
+cbsa_data_final <- cbsa_data_final %>%
+  group_by(CBSA_NAME, CBSA_CODE) %>%
+  summarize(
+    sf_hh = sum(sf_hh_cbsa, na.rm = T),
+    avg_val = weighted.mean(avg_val, w = sf_hh_cbsa, na.rm = T),
+    avg_ins = weighted.mean(avg_ins, w = sf_hh_cbsa, na.rm = T),
+    avg_tax = weighted.mean(avg_tax, w = sf_hh_cbsa, na.rm = T),
+    avg_elec = weighted.mean(avg_elec, w = sf_hh_cbsa, na.rm = T),
+    avg_wat = weighted.mean(avg_wat, w = sf_hh_cbsa, na.rm = T),
+    avg_gas = weighted.mean(avg_gas, w = sf_hh_cbsa, na.rm = T),
+    avg_fuel = weighted.mean(avg_fuel, w = sf_hh_cbsa, na.rm = T)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    CBSA_NAME = if_else(CBSA_NAME == '[not in any CBSA]', 'Non-metro areas', CBSA_NAME),
+    CBSA_CODE = as.character(CBSA_CODE)   
+  ) 
+
+# Read in zillow data ----
+
+zillow_metro_data <- read.csv(zillow_metro_data_file_path)
+zillow_metro_codes_crosswalk <- read.xlsx(zillow_metro_codes_file_path)
+
+names(zillow_metro_data) <- str_remove(names(zillow_metro_data), "X")
+
+zillow_metro_data <- zillow_metro_data %>%
+  pivot_longer(names_to = 'date', values_to = 'paymnt', cols = `2012.01.31`:ncol(zillow_metro_data))
+
+zillow_metro_data <- zillow_metro_data %>%
+  mutate(date = as.Date(date, format = "%Y.%m.%d"),
+         RegionID = as.character(RegionID)) %>%
+  filter(RegionType == 'msa')
+
+zillow_metro_data <- zillow_metro_data %>%
+  rename(zillow_metro_code = RegionID, pop_rank = SizeRank) %>%
+  select(zillow_metro_code, pop_rank, date, paymnt) %>%
+  arrange(zillow_metro_code, date)
+
+zillow_metro_data <- zillow_metro_data %>%
+  group_by(zillow_metro_code) %>%
+  mutate(ttm = rollmean(paymnt, k = 12, align = "right", fill = NA)) %>%
+  ungroup() 
+
+zillow_metro_data <- zillow_metro_data %>%
+  filter(date == max(date)) %>%
+  select(-date)
+
+zillow_metro_codes_crosswalk <- read.xlsx(zillow_metro_codes_file_path) %>%
+  mutate(zillow_metro_code = as.character(zillow_metro_code))
+
+zillow_metro_data <- zillow_metro_data %>% 
+  left_join(zillow_metro_codes_crosswalk, by = c('zillow_metro_code'))
+
+zillow_metro_data <- zillow_metro_data %>% 
+  select(ends_with('metro_name'), GEOID, zillow_metro_code, everything())
+
+# Finalize metro-level affordability data ----
+
+cbsa_data_final <- cbsa_data_final %>%
+  left_join(zillow_metro_data, by = c('CBSA_CODE' = 'GEOID')) %>%
+  filter(!is.na(zillow_metro_name)) 
+
+cbsa_data_final <- cbsa_data_final %>%
+  select(CBSA_NAME:CBSA_CODE, sf_hh, avg_val, avg_elec:avg_fuel, ttm)
+
+cbsa_data_final <- cbsa_data_final %>%
+  mutate(ttm = ttm*12) %>%
+  rename(zillow_payment_10_down = ttm)
+
+cbsa_data_final <- cbsa_data_final %>%
+  mutate(zillow_payment_10_down_plus_utilities = zillow_payment_10_down + avg_elec + avg_wat + avg_gas + avg_fuel)
+
+
+# Prep final data for output ----
 
 data_final <- data_cleaned %>%
   group_by(STATE, PUMA) %>%
@@ -128,6 +277,8 @@ data_final <- data_final %>%
 # Output tabular data ----
 
 write.xlsx(data_final, output_file_path_for_cleaned_data)
+
+write.xlsx(cbsa_data_final, output_file_path_for_metro_affordablity_data) 
 
 rm(data_cleaned, pums_variables_of_interest, puma_info, puma_shp_file_path, output_file_path_for_cleaned_data)
 
