@@ -93,7 +93,7 @@ puma_to_cbsa_crossover_file <- puma_to_cbsa_crossover_file %>%
 # Reading in PUMS data ----
 
 # Set the variables to pull from PUMS data; add to this vector or create your own!
-pums_variables_of_interest <- c('SERIALNO', 'PUMA','RT', 'WGTP', 'ADJHSG', 'TYPEHUGQ', 'BLD', 'TEN', 'HFL', 'VALP',
+pums_variables_of_interest <- c('SERIALNO', 'PUMA','RT', 'WGTP', 'ADJHSG', 'TYPEHUGQ', 'BLD', 'TEN', 'HFL', 'VALP', 'MRGX', 'MRGP',
                                 # Costs 
                                 'CONP', 'ELEP', 'FULP', 'GASP', 'WATP', 'INSP', 'TAXAMT')
 
@@ -111,85 +111,104 @@ data <- get_pums(
   key = census_api_key
 )
 
-# Clean PUMS data ----
+# Read in metro-level household income data ----
 
-data_cleaned <- data %>%
-  mutate(ELEP = as.numeric(ELEP),
-         WATP = as.numeric(WATP),
-         CONP = as.numeric(CONP),
-         GASP = as.numeric(GASP),
-         FULP = as.numeric(FULP),
-         VALP = as.numeric(VALP),
-         INSP = as.numeric(INSP),
-         TAXAMT = as.numeric(TAXAMT)) %>%
-  mutate(
-    # ELEP == 2 (No charge or electricity not used)
-    ELEP_recode = if_else(ELEP == 2, 0, ELEP*12),
-    # WATP == 2 (No charge)
-    WATP_recode = if_else(WATP == 2, 0, WATP),
-    CONP_recode = CONP,
-    # GASP == 3 (No charge or gas not used)
-    GASP_recode = if_else(GASP == 3, 0, GASP*12),
-    # FULP == 2 (No charge or fuel other than gas or electricity not used)
-    FULP_recode = if_else(FULP == 2, 0, FULP),
-    ins_rate = INSP / VALP,
-    prop_tax_rate = TAXAMT / VALP,
+# Read in the preferred variable spreadsheet (create your own within this file: R:/ADHOC-JBREC/Ian-K/API Template Scripts/ACS/Summary Tables/acs_variables_2023_acs1.xlsx)
+variables <- read.xlsx("C:/Users/ianwe/Downloads/github/acs/acs-variables/acs_variables_2024_acs1.xlsx", 
+                       sheet = 'Affordability')
+
+# Select 'name' and 'amended_label' (and rename 'name' to code')
+variables <- variables %>%
+  select(name, amended_label) %>%
+  rename(code = name)
+
+# Create Codes, containing all of the preferred variable codes
+variable_codes <- variables$code
+# Create Labels, containing all of the amended labels
+variable_labels <- variables$amended_label
+
+income_data <- get_acs(
+  geography = 'cbsa',
+  variables = variable_codes,
+  year = 2024,
+  geometry = F,
+  key = census_api_key,
+  survey = 'acs1',
+  show_call = T
+)
+
+income_data <- income_data %>%
+  # Rename 'variable' to 'Code'
+  rename(code = variable) %>%
+  # Join the variable spreadsheet to the ACS data by 'Code'
+  left_join(variables, by = 'code') %>%
+  # Rename the listed 'Variable' with the 'AmendedLabel' from the variable spreadsheet
+  rename(variable = amended_label) %>%
+  # Drop the 'Code' column
+  select(-c(code, moe))
+
+# Pivot the ACS data to a wide format, with columns named by variable. Each geography unit will have one row with one column per variable.
+income_data <- income_data %>%
+  pivot_wider(names_from = 'variable', values_from = 'estimate', id_cols = 'GEOID')
+
+# Read in FRED data to inflation-adjust utility costs ----
+
+utility_series <- c(
+  'CUUR0000SEHF01', # Consumer Price Index for All Urban Consumers: Electricity in U.S. City Average
+  'CUUR0000SEHF02', # Consumer Price Index for All Urban Consumers: Utility (Piped) Gas Service in U.S. City Average 
+  'CUUR0000SEHG',   # Consumer Price Index for All Urban Consumers: Water and Sewer and Trash Collection Services in U.S. City Average
+  'CUUR0000SEHE'    # Consumer Price Index for All Urban Consumers: Fuel Oil and Other Fuels in U.S. City Average
+)
+
+# Set the FRED API Key, if a new user is using this you will have to obtain an API key from here: https://fred.stlouisfed.org/docs/api/api_key.html
+fredr_set_key(key = 'cbebc48b543b6420b4aa3ff9bd7a9878')
+
+get_fred_data <- function(variables) {
+  
+  # Create an empty list to store the data frames
+  dataframes_list <- list()
+  
+  # For each variable stored in variables
+  for (i in utility_series) {
     
-  ) %>%
-  distinct(SERIALNO, .keep_all = T) %>%
-  filter(BLD %in% c('2','3'))
+    # Fetch the variable's time series using the fred API
+    ## All data fetched will be monthly (frequency = 'm')
+    utility_data <- fredr(
+      series_id = i, 
+      sort_order = 'asc', 
+      frequency = 'm', 
+      units = 'pc1',
+      observation_start = as.Date('2024-11-01'), 
+      observation_end = as.Date('2024-11-01')
+    ) %>%
+      select(date, value)
+    
+    
+    # Store the variable's data in dataframes_list, naming the dataframe by 'col_name' (i.e. the title of the variable)
+    dataframes_list[[i]] <- utility_data
+  }
+  
+  # Return the list of data frames
+  return(dataframes_list)
+}
 
-# Prep final data for output ----
+utility_data <- get_fred_data(utility_series)
 
-data_cleaned <- data_cleaned %>%
-  group_by(STATE, PUMA) %>%
-  summarize(
-    sf_hh = sum(WGTP, na.rm = T),
-    avg_val = weighted.mean(VALP, w = WGTP, na.rm = T),
-    avg_ins = weighted.mean(INSP, w = WGTP, na.rm = T),
-    avg_tax = weighted.mean(TAXAMT, w = WGTP, na.rm = T),
-    avg_elec = weighted.mean(ELEP_recode, w = WGTP, na.rm = T),
-    avg_wat = weighted.mean(WATP_recode, w = WGTP, na.rm = T),
-    avg_gas = weighted.mean(GASP_recode, w = WGTP, na.rm = T),
-    avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T),
-    med_ins_rate = weighted.median(ins_rate, na.rm = T)*100,
-    avg_ins_rate = weighted.mean(ins_rate, na.rm = T)*100,
-    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T)*100,
-    avg_tax_rate = weighted.mean(prop_tax_rate, na.rm = T)*100
-  ) %>%
-  ungroup()
+utility_data <- do.call(cbind, utility_data)
 
-data_cleaned <- data_cleaned %>%
-  mutate(avg_total = rowSums(select(., avg_ins, avg_tax, avg_elec, avg_wat, avg_gas, avg_fuel), na.rm = TRUE))
+utility_data <- utility_data %>%
+  # Rename the first column to 'Date'
+  rename(date = colnames(.)[1]) %>%
+  # Select Date and columns that end with '.value' 
+  select(1, ends_with('.value')) %>%
+  # Rename columns by dropping '.value' from all column names that end with '.value'
+  rename_with(~gsub(".value", "", .), ends_with('.value'))
 
-data_final <- data_cleaned %>%
-  left_join(puma_info, by = c('PUMA', 'STATE')) %>%
-  mutate(PUMA_NAME = str_remove(PUMA_NAME, ' PUMA')) %>%
-  select(STATE, STATE_NAME, PUMA, PUMA_NAME, everything()) 
-
-# Generate metro level data ----
-
-cbsa_data_final <- data_final %>%
-  left_join(puma_to_cbsa_crossover_file, by = c('PUMA', 'STATE')) %>%
-  mutate(sf_hh_cbsa = sf_hh * ALLOC_FACTOR)
-
-cbsa_data_final <- cbsa_data_final %>%
-  group_by(CBSA_NAME, CBSA_CODE) %>%
-  summarize(
-    sf_hh = sum(sf_hh_cbsa, na.rm = T),
-    avg_val = weighted.mean(avg_val, w = sf_hh_cbsa, na.rm = T),
-    avg_ins = weighted.mean(avg_ins, w = sf_hh_cbsa, na.rm = T),
-    avg_tax = weighted.mean(avg_tax, w = sf_hh_cbsa, na.rm = T),
-    avg_elec = weighted.mean(avg_elec, w = sf_hh_cbsa, na.rm = T),
-    avg_wat = weighted.mean(avg_wat, w = sf_hh_cbsa, na.rm = T),
-    avg_gas = weighted.mean(avg_gas, w = sf_hh_cbsa, na.rm = T),
-    avg_fuel = weighted.mean(avg_fuel, w = sf_hh_cbsa, na.rm = T)
-  ) %>%
-  ungroup() %>%
-  mutate(
-    CBSA_NAME = if_else(CBSA_NAME == '[not in any CBSA]', 'Non-metro areas', CBSA_NAME),
-    CBSA_CODE = as.character(CBSA_CODE)   
-  ) 
+utility_data <- utility_data %>%
+  rename(elec_yoy = CUUR0000SEHF01,
+         gas_yoy = CUUR0000SEHF02,
+         wat_yoy = CUUR0000SEHG,
+         fuel_yoy = CUUR0000SEHE)
 
 # Read in zillow data ----
 
@@ -229,14 +248,155 @@ zillow_metro_data <- zillow_metro_data %>%
 zillow_metro_data <- zillow_metro_data %>% 
   select(ends_with('metro_name'), GEOID, zillow_metro_code, everything())
 
-# Finalize metro-level affordability data ----
+# Clean PUMS data ----
+
+data_cleaned <- data %>%
+  mutate(ELEP = as.numeric(ELEP),
+         WATP = as.numeric(WATP),
+         CONP = as.numeric(CONP),
+         GASP = as.numeric(GASP),
+         FULP = as.numeric(FULP),
+         VALP = as.numeric(VALP),
+         INSP = as.numeric(INSP),
+         TAXAMT = as.numeric(TAXAMT),
+         MRGP = as.numeric(MRGP)) %>%
+  mutate(
+    # ELEP == 2 (No charge or electricity not used)
+    ELEP_recode = if_else(ELEP == 2, 0, ELEP*12),
+    # WATP == 2 (No charge)
+    WATP_recode = if_else(WATP == 2, 0, WATP),
+    CONP_recode = CONP,
+    # GASP == 3 (No charge or gas not used)
+    GASP_recode = if_else(GASP == 3, 0, GASP*12),
+    # FULP == 2 (No charge or fuel other than gas or electricity not used)
+    FULP_recode = if_else(FULP == 2, 0, FULP),
+    ins_rate = INSP / VALP,
+    prop_tax_rate = TAXAMT / VALP,
+    
+  ) %>%
+  distinct(SERIALNO, .keep_all = T) %>%
+  filter(BLD %in% c('2','3'))
+
+data_cleaned <- data_cleaned %>%
+  group_by(STATE, PUMA) %>%
+  summarize(
+    sf_hh = sum(WGTP, na.rm = T),
+    avg_val = weighted.mean(VALP, w = WGTP, na.rm = T),
+    avg_ins = weighted.mean(INSP, w = WGTP, na.rm = T),
+    avg_tax = weighted.mean(TAXAMT, w = WGTP, na.rm = T),
+    avg_elec = weighted.mean(ELEP_recode, w = WGTP, na.rm = T),
+    avg_wat = weighted.mean(WATP_recode, w = WGTP, na.rm = T),
+    avg_gas = weighted.mean(GASP_recode, w = WGTP, na.rm = T),
+    avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T),
+    med_ins_rate = weighted.median(ins_rate, na.rm = T)*100,
+    avg_ins_rate = weighted.mean(ins_rate, na.rm = T)*100,
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T)*100,
+    avg_tax_rate = weighted.mean(prop_tax_rate, na.rm = T)*100
+  ) %>%
+  ungroup()
+
+data_cleaned <- data_cleaned %>%
+  mutate(avg_total = rowSums(select(., avg_ins, avg_tax, avg_elec, avg_wat, avg_gas, avg_fuel), na.rm = TRUE))
+
+data_final <- data_cleaned %>%
+  left_join(puma_info, by = c('PUMA', 'STATE')) %>%
+  mutate(PUMA_NAME = str_remove(PUMA_NAME, ' PUMA')) %>%
+  select(STATE, STATE_NAME, PUMA, PUMA_NAME, everything()) 
+
+# Generate metro level data ----
+
+cbsa_data_final <- data %>%
+  mutate(ELEP = as.numeric(ELEP),
+         WATP = as.numeric(WATP),
+         CONP = as.numeric(CONP),
+         GASP = as.numeric(GASP),
+         FULP = as.numeric(FULP),
+         VALP = as.numeric(VALP),
+         INSP = as.numeric(INSP),
+         TAXAMT = as.numeric(TAXAMT),
+         MRGP = as.numeric(MRGP)) %>%
+  mutate(
+    # ELEP == 2 (No charge or electricity not used)
+    ELEP_recode = if_else(ELEP == 2, 0, ELEP*12),
+    # WATP == 2 (No charge)
+    WATP_recode = if_else(WATP == 2, 0, WATP),
+    CONP_recode = CONP,
+    # GASP == 3 (No charge or gas not used)
+    GASP_recode = if_else(GASP == 3, 0, GASP*12),
+    # FULP == 2 (No charge or fuel other than gas or electricity not used)
+    FULP_recode = if_else(FULP == 2, 0, FULP),
+    ins_rate = INSP / VALP,
+    prop_tax_rate = TAXAMT / VALP
+    
+  ) %>%
+  distinct(SERIALNO, .keep_all = T) %>%
+  filter(BLD %in% c('2','3'))
+
+cbsa_data_final <- cbsa_data_final %>%
+  group_by(STATE, PUMA) %>%
+  summarize(
+    sf_hh = sum(WGTP, na.rm = T),
+    avg_val = weighted.mean(VALP, w = WGTP, na.rm = T),
+    avg_ins = weighted.mean(INSP, w = WGTP, na.rm = T),
+    avg_tax = weighted.mean(TAXAMT, w = WGTP, na.rm = T),
+    avg_elec = weighted.mean(ELEP_recode, w = WGTP, na.rm = T),
+    avg_wat = weighted.mean(WATP_recode, w = WGTP, na.rm = T),
+    avg_gas = weighted.mean(GASP_recode, w = WGTP, na.rm = T),
+    avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T),
+    med_ins_rate = weighted.median(ins_rate, na.rm = T)*100,
+    avg_ins_rate = weighted.mean(ins_rate, na.rm = T)*100,
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T)*100,
+    avg_tax_rate = weighted.mean(prop_tax_rate, na.rm = T)*100
+  ) %>%
+  ungroup()
+
+cbsa_data_final <- cbsa_data_final %>%
+  mutate(avg_total = rowSums(select(., avg_ins, avg_tax, avg_elec, avg_wat, avg_gas, avg_fuel), na.rm = TRUE))
+
+cbsa_data_final <- cbsa_data_final %>%
+  left_join(puma_info, by = c('PUMA', 'STATE')) %>%
+  mutate(PUMA_NAME = str_remove(PUMA_NAME, ' PUMA')) %>%
+  select(STATE, STATE_NAME, PUMA, PUMA_NAME, everything()) 
+
+cbsa_data_final <- cbsa_data_final %>%
+  left_join(puma_to_cbsa_crossover_file, by = c('PUMA', 'STATE')) %>%
+  mutate(sf_hh_cbsa = sf_hh * ALLOC_FACTOR)
+
+cbsa_data_final <- cbsa_data_final %>%
+  group_by(CBSA_NAME, CBSA_CODE) %>%
+  summarize(
+    sf_hh = sum(sf_hh_cbsa, na.rm = T),
+    avg_val = weighted.mean(avg_val, w = sf_hh_cbsa, na.rm = T),
+    avg_ins = weighted.mean(avg_ins, w = sf_hh_cbsa, na.rm = T),
+    avg_tax = weighted.mean(avg_tax, w = sf_hh_cbsa, na.rm = T),
+    avg_elec = weighted.mean(avg_elec, w = sf_hh_cbsa, na.rm = T),
+    avg_wat = weighted.mean(avg_wat, w = sf_hh_cbsa, na.rm = T),
+    avg_gas = weighted.mean(avg_gas, w = sf_hh_cbsa, na.rm = T),
+    avg_fuel = weighted.mean(avg_fuel, w = sf_hh_cbsa, na.rm = T)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    CBSA_NAME = if_else(CBSA_NAME == '[not in any CBSA]', 'Non-metro areas', CBSA_NAME),
+    CBSA_CODE = as.character(CBSA_CODE)   
+  ) 
+
+cbsa_data_final <- cbsa_data_final %>%
+  select(CBSA_NAME:sf_hh, avg_elec:avg_fuel)
+
+cbsa_data_final <- cbsa_data_final %>%
+  mutate(
+    avg_elec = avg_elec + avg_elec * (utility_data$elec_yoy[1] / 100),
+    avg_wat = avg_wat + avg_wat * (utility_data$wat_yoy[1] / 100),
+    avg_gas = avg_gas + avg_gas * (utility_data$gas_yoy[1] / 100),
+    avg_fuel = avg_fuel + avg_fuel * (utility_data$fuel_yoy[1] / 100),
+                                 )
 
 cbsa_data_final <- cbsa_data_final %>%
   left_join(zillow_metro_data, by = c('CBSA_CODE' = 'GEOID')) %>%
   filter(!is.na(zillow_metro_name)) 
 
 cbsa_data_final <- cbsa_data_final %>%
-  select(CBSA_NAME:CBSA_CODE, sf_hh, avg_val, avg_elec:avg_fuel, ttm)
+  select(CBSA_NAME:CBSA_CODE, sf_hh, avg_elec:avg_fuel, ttm)
 
 cbsa_data_final <- cbsa_data_final %>%
   mutate(ttm = ttm*12) %>%
@@ -245,6 +405,8 @@ cbsa_data_final <- cbsa_data_final %>%
 cbsa_data_final <- cbsa_data_final %>%
   mutate(zillow_payment_10_down_plus_utilities = zillow_payment_10_down + avg_elec + avg_wat + avg_gas + avg_fuel)
 
+cbsa_data_final <- cbsa_data_final %>%
+  left_join(income_data, by = c('CBSA_CODE' = 'GEOID'))
 
 # Prep final data for output ----
 
