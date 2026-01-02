@@ -1,7 +1,7 @@
 # Packages ----
 
 # Set the package names to read in
-packages <- c("tidyverse", "readxl", "tidycensus", "sf", "openxlsx", "arcgisbinding", "spatstat", "zoo")
+packages <- c("tidyverse", "readxl", "tidycensus", "sf", "openxlsx", "arcgisbinding", "spatstat", "zoo", "fredr")
 
 # Install packages that are not yet installed
 installed_packages <- packages %in% rownames(installed.packages())
@@ -27,7 +27,7 @@ cbsa_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2024/CBSAs/cb_2024_us
 
 puma_cbsa_crossover_file_path <- "C:/Users/ianwe/Downloads/shapefiles/crossover_files/puma_2020_to_cbsa_2023.xlsx"
 
-zillow_metro_data_file_path <- "C:/Users/ianwe/Downloads/Metro_total_monthly_payment_downpayment_0.10_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+zillow_metro_data_file_path <- "C:/Users/ianwe/Downloads/Metro_total_monthly_payment_downpayment_0.20_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
 
 zillow_metro_codes_file_path <- "C:/Users/ianwe/Downloads/github/zillow/inputs/zillow_metro_crosswalk.xlsx"
 
@@ -93,7 +93,7 @@ puma_to_cbsa_crossover_file <- puma_to_cbsa_crossover_file %>%
 # Reading in PUMS data ----
 
 # Set the variables to pull from PUMS data; add to this vector or create your own!
-pums_variables_of_interest <- c('SERIALNO', 'PUMA','RT', 'WGTP', 'ADJHSG', 'TYPEHUGQ', 'BLD', 'TEN', 'HFL', 'VALP', 'MRGX', 'MRGP',
+pums_variables_of_interest <- c('SERIALNO', 'PUMA','RT', 'WGTP', 'ADJHSG', 'TYPEHUGQ', 'BLD', 'TEN', "VACS", 'HFL', 'VALP', 'MRGX', 'MRGP',
                                 # Costs 
                                 'CONP', 'ELEP', 'FULP', 'GASP', 'WATP', 'INSP', 'TAXAMT')
 
@@ -157,7 +157,8 @@ utility_series <- c(
   'CUUR0000SEHF01', # Consumer Price Index for All Urban Consumers: Electricity in U.S. City Average
   'CUUR0000SEHF02', # Consumer Price Index for All Urban Consumers: Utility (Piped) Gas Service in U.S. City Average 
   'CUUR0000SEHG',   # Consumer Price Index for All Urban Consumers: Water and Sewer and Trash Collection Services in U.S. City Average
-  'CUUR0000SEHE'    # Consumer Price Index for All Urban Consumers: Fuel Oil and Other Fuels in U.S. City Average
+  'CUUR0000SEHE',   # Consumer Price Index for All Urban Consumers: Fuel Oil and Other Fuels in U.S. City Average
+  'CUUR0000SAH2'    # Consumer Price Index for All Urban Consumers: Fuels and Utilities in U.S. City Average
 )
 
 # Set the FRED API Key, if a new user is using this you will have to obtain an API key from here: https://fred.stlouisfed.org/docs/api/api_key.html
@@ -208,7 +209,8 @@ utility_data <- utility_data %>%
   rename(elec_yoy = CUUR0000SEHF01,
          gas_yoy = CUUR0000SEHF02,
          wat_yoy = CUUR0000SEHG,
-         fuel_yoy = CUUR0000SEHE)
+         fuel_yoy = CUUR0000SEHE,
+         utilities_yoy = CUUR0000SAH2)
 
 # Read in zillow data ----
 
@@ -330,28 +332,18 @@ cbsa_data_final <- data %>%
     
   ) %>%
   distinct(SERIALNO, .keep_all = T) %>%
-  filter(BLD %in% c('2','3'))
+  filter(!BLD %in% c('1','10') & VACS == "0")
+
+cbsa_data_final <- cbsa_data_final %>%
+  mutate(utility_costs = ELEP_recode + WATP_recode + GASP_recode + FULP_recode)
 
 cbsa_data_final <- cbsa_data_final %>%
   group_by(STATE, PUMA) %>%
   summarize(
     sf_hh = sum(WGTP, na.rm = T),
-    avg_val = weighted.mean(VALP, w = WGTP, na.rm = T),
-    avg_ins = weighted.mean(INSP, w = WGTP, na.rm = T),
-    avg_tax = weighted.mean(TAXAMT, w = WGTP, na.rm = T),
-    avg_elec = weighted.mean(ELEP_recode, w = WGTP, na.rm = T),
-    avg_wat = weighted.mean(WATP_recode, w = WGTP, na.rm = T),
-    avg_gas = weighted.mean(GASP_recode, w = WGTP, na.rm = T),
-    avg_fuel = weighted.mean(FULP_recode, w = WGTP, na.rm = T),
-    med_ins_rate = weighted.median(ins_rate, na.rm = T)*100,
-    avg_ins_rate = weighted.mean(ins_rate, na.rm = T)*100,
-    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T)*100,
-    avg_tax_rate = weighted.mean(prop_tax_rate, na.rm = T)*100
+    med_utility_cost = weighted.median(utility_costs, w = WGTP, na.rm = T)
   ) %>%
   ungroup()
-
-cbsa_data_final <- cbsa_data_final %>%
-  mutate(avg_total = rowSums(select(., avg_ins, avg_tax, avg_elec, avg_wat, avg_gas, avg_fuel), na.rm = TRUE))
 
 cbsa_data_final <- cbsa_data_final %>%
   left_join(puma_info, by = c('PUMA', 'STATE')) %>%
@@ -366,13 +358,7 @@ cbsa_data_final <- cbsa_data_final %>%
   group_by(CBSA_NAME, CBSA_CODE) %>%
   summarize(
     sf_hh = sum(sf_hh_cbsa, na.rm = T),
-    avg_val = weighted.mean(avg_val, w = sf_hh_cbsa, na.rm = T),
-    avg_ins = weighted.mean(avg_ins, w = sf_hh_cbsa, na.rm = T),
-    avg_tax = weighted.mean(avg_tax, w = sf_hh_cbsa, na.rm = T),
-    avg_elec = weighted.mean(avg_elec, w = sf_hh_cbsa, na.rm = T),
-    avg_wat = weighted.mean(avg_wat, w = sf_hh_cbsa, na.rm = T),
-    avg_gas = weighted.mean(avg_gas, w = sf_hh_cbsa, na.rm = T),
-    avg_fuel = weighted.mean(avg_fuel, w = sf_hh_cbsa, na.rm = T)
+    med_utility_cost = weighted.median(med_utility_cost, w = sf_hh_cbsa, na.rm = T)
   ) %>%
   ungroup() %>%
   mutate(
@@ -381,32 +367,30 @@ cbsa_data_final <- cbsa_data_final %>%
   ) 
 
 cbsa_data_final <- cbsa_data_final %>%
-  select(CBSA_NAME:sf_hh, avg_elec:avg_fuel)
+  select(CBSA_NAME:sf_hh, med_utility_cost)
 
 cbsa_data_final <- cbsa_data_final %>%
-  mutate(
-    avg_elec = avg_elec + avg_elec * (utility_data$elec_yoy[1] / 100),
-    avg_wat = avg_wat + avg_wat * (utility_data$wat_yoy[1] / 100),
-    avg_gas = avg_gas + avg_gas * (utility_data$gas_yoy[1] / 100),
-    avg_fuel = avg_fuel + avg_fuel * (utility_data$fuel_yoy[1] / 100),
-                                 )
+  mutate(med_utility_cost = med_utility_cost + med_utility_cost * (utility_data$utilities_yoy[1] / 100))
 
 cbsa_data_final <- cbsa_data_final %>%
   left_join(zillow_metro_data, by = c('CBSA_CODE' = 'GEOID')) %>%
   filter(!is.na(zillow_metro_name)) 
 
 cbsa_data_final <- cbsa_data_final %>%
-  select(CBSA_NAME:CBSA_CODE, sf_hh, avg_elec:avg_fuel, ttm)
+  select(CBSA_NAME:CBSA_CODE, sf_hh, med_utility_cost, ttm)
 
 cbsa_data_final <- cbsa_data_final %>%
   mutate(ttm = ttm*12) %>%
-  rename(zillow_payment_10_down = ttm)
+  rename(zillow_payment_20_down = ttm)
 
 cbsa_data_final <- cbsa_data_final %>%
-  mutate(zillow_payment_10_down_plus_utilities = zillow_payment_10_down + avg_elec + avg_wat + avg_gas + avg_fuel)
+  mutate(zillow_payment_20_down_plus_utilities = zillow_payment_20_down + med_utility_cost)
 
 cbsa_data_final <- cbsa_data_final %>%
   left_join(income_data, by = c('CBSA_CODE' = 'GEOID'))
+
+cbsa_data_final <- cbsa_data_final %>%
+  mutate(affordability = zillow_payment_20_down_plus_utilities / median_income_renters)
 
 # Prep final data for output ----
 
