@@ -27,8 +27,8 @@ cbsa_shp_file_path <- "C:/Users/ianwe/Downloads/shapefiles/2024/CBSAs/cb_2024_us
 
 puma_cbsa_crossover_file_path <- "C:/Users/ianwe/Downloads/shapefiles/crossover_files/puma_2020_to_cbsa_2023.xlsx"
 
-zillow_metro_data_file_path <- "C:/Users/ianwe/Downloads/Metro_total_monthly_payment_downpayment_0.20_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
-
+zillow_metro_data_file_path <- "C:/Users/ianwe/Downloads/Metro_mortgage_payment_downpayment_0.20_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+zillow_metro_prices_file_path <- "C:/Users/ianwe/Downloads/Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
 zillow_metro_codes_file_path <- "C:/Users/ianwe/Downloads/github/zillow/inputs/zillow_metro_crosswalk.xlsx"
 
 output_file_path_for_puma_shp <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".shp") # Set the file path to output the .shp file to.
@@ -154,6 +154,7 @@ income_data <- income_data %>%
 # Read in FRED data to inflation-adjust utility costs ----
 
 utility_series <- c(
+  'CUUR0000SEHD',    # Consumer Price Index for All Urban Consumers: Tenants' and Household Insurance in U.S. City Average
   'CUUR0000SEHF01', # Consumer Price Index for All Urban Consumers: Electricity in U.S. City Average
   'CUUR0000SEHF02', # Consumer Price Index for All Urban Consumers: Utility (Piped) Gas Service in U.S. City Average 
   'CUUR0000SEHG',   # Consumer Price Index for All Urban Consumers: Water and Sewer and Trash Collection Services in U.S. City Average
@@ -206,7 +207,8 @@ utility_data <- utility_data %>%
   rename_with(~gsub(".value", "", .), ends_with('.value'))
 
 utility_data <- utility_data %>%
-  rename(elec_yoy = CUUR0000SEHF01,
+  rename(ins_yoy = CUUR0000SEHD,
+         elec_yoy = CUUR0000SEHF01,
          gas_yoy = CUUR0000SEHF02,
          wat_yoy = CUUR0000SEHG,
          fuel_yoy = CUUR0000SEHE,
@@ -215,31 +217,46 @@ utility_data <- utility_data %>%
 # Read in zillow data ----
 
 zillow_metro_data <- read.csv(zillow_metro_data_file_path)
+zillow_metro_prices <- read.csv(zillow_metro_prices_file_path)
 zillow_metro_codes_crosswalk <- read.xlsx(zillow_metro_codes_file_path)
 
-names(zillow_metro_data) <- str_remove(names(zillow_metro_data), "X")
+clean_zillow_data <- function(data, column, column_ttm) {
+  
+  names(data) <- stringr::str_remove(names(data), "X")
+  
+  data <- data %>%
+    pivot_longer(names_to = "date", values_to = column, cols = `2012.01.31`:ncol(data))
+  
+  data <- data %>%
+    mutate(date = as.Date(date, format = "%Y.%m.%d"),
+           RegionID = as.character(RegionID)) %>%
+    filter(RegionType == "msa")
+  
+  data <- data %>%
+    rename(zillow_metro_code = RegionID, pop_rank = SizeRank) %>%
+    select(zillow_metro_code, pop_rank, date, all_of(column)) %>%
+    arrange(zillow_metro_code, date)
+  
+  data <- data %>%
+    group_by(zillow_metro_code) %>%
+    mutate(!!column_ttm := rollmean(.data[[column]], k = 12, align = "right", fill = NA)) %>%
+    ungroup()
+  
+  data <- data %>%
+    filter(date == max(date)) %>%
+    select(zillow_metro_code, pop_rank, !!column_ttm)
+  
+  return(data)
+}
+
+zillow_metro_data <- clean_zillow_data(zillow_metro_data, 'paymnt', 'paymnt_ttm')
+zillow_metro_prices <- clean_zillow_data(zillow_metro_prices, 'price', 'price_ttm') %>%
+  select(-pop_rank)
 
 zillow_metro_data <- zillow_metro_data %>%
-  pivot_longer(names_to = 'date', values_to = 'paymnt', cols = `2012.01.31`:ncol(zillow_metro_data))
+  left_join(zillow_metro_prices, by = c('zillow_metro_code'))
 
-zillow_metro_data <- zillow_metro_data %>%
-  mutate(date = as.Date(date, format = "%Y.%m.%d"),
-         RegionID = as.character(RegionID)) %>%
-  filter(RegionType == 'msa')
-
-zillow_metro_data <- zillow_metro_data %>%
-  rename(zillow_metro_code = RegionID, pop_rank = SizeRank) %>%
-  select(zillow_metro_code, pop_rank, date, paymnt) %>%
-  arrange(zillow_metro_code, date)
-
-zillow_metro_data <- zillow_metro_data %>%
-  group_by(zillow_metro_code) %>%
-  mutate(ttm = rollmean(paymnt, k = 12, align = "right", fill = NA)) %>%
-  ungroup() 
-
-zillow_metro_data <- zillow_metro_data %>%
-  filter(date == max(date)) %>%
-  select(-date)
+rm(zillow_metro_prices)
 
 zillow_metro_codes_crosswalk <- read.xlsx(zillow_metro_codes_file_path) %>%
   mutate(zillow_metro_code = as.character(zillow_metro_code))
@@ -327,22 +344,36 @@ cbsa_data_final <- data %>%
     GASP_recode = if_else(GASP == 3, 0, GASP*12),
     # FULP == 2 (No charge or fuel other than gas or electricity not used)
     FULP_recode = if_else(FULP == 2, 0, FULP),
+    
     ins_rate = INSP / VALP,
-    prop_tax_rate = TAXAMT / VALP
+    prop_tax_rate = TAXAMT / VALP,
+    elec_rate = ELEP_recode / VALP,
+    gas_rate = GASP_recode / VALP,
+    fuel_rate = FULP_recode / VALP,
+    wat_rate = WATP_recode / VALP
     
   ) %>%
   distinct(SERIALNO, .keep_all = T) %>%
   filter(!BLD %in% c('1','10') & VACS == "0")
 
 cbsa_data_final <- cbsa_data_final %>%
-  mutate(utility_costs = ELEP_recode + WATP_recode + GASP_recode + FULP_recode)
-
-cbsa_data_final <- cbsa_data_final %>%
   group_by(STATE, PUMA) %>%
   summarize(
     sf_hh = sum(WGTP, na.rm = T),
-    med_utility_cost = weighted.median(utility_costs, w = WGTP, na.rm = T)
-  ) %>%
+    med_val = weighted.median(VALP, w = WGTP, na.rm = T),
+    med_ins = weighted.median(INSP, w = WGTP, na.rm = T),
+    med_tax = weighted.median(TAXAMT, w = WGTP, na.rm = T),
+    med_elec = weighted.median(ELEP_recode, w = WGTP, na.rm = T),
+    med_wat = weighted.median(WATP_recode, w = WGTP, na.rm = T),
+    med_gas = weighted.median(GASP_recode, w = WGTP, na.rm = T),
+    med_fuel = weighted.median(FULP_recode, w = WGTP, na.rm = T),
+    med_ins_rate = weighted.median(ins_rate, na.rm = T),
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T),
+    med_elec_rate = weighted.median(elec_rate, na.rm = T),
+    med_gas_rate = weighted.median(gas_rate, na.rm = T),
+    med_wat_rate = weighted.median(wat_rate, na.rm = T),
+    med_fuel_rate = weighted.median(fuel_rate, na.rm = T),
+    ) %>%
   ungroup()
 
 cbsa_data_final <- cbsa_data_final %>%
@@ -358,7 +389,19 @@ cbsa_data_final <- cbsa_data_final %>%
   group_by(CBSA_NAME, CBSA_CODE) %>%
   summarize(
     sf_hh = sum(sf_hh_cbsa, na.rm = T),
-    med_utility_cost = weighted.median(med_utility_cost, w = sf_hh_cbsa, na.rm = T)
+    med_val = weighted.median(med_val, w = sf_hh_cbsa, na.rm = T),
+    med_ins = weighted.median(med_ins, w = sf_hh_cbsa, na.rm = T),
+    med_tax = weighted.median(med_tax, w = sf_hh_cbsa, na.rm = T),
+    med_elec = weighted.median(med_elec, w = sf_hh_cbsa, na.rm = T),
+    med_wat = weighted.median(med_wat, w = sf_hh_cbsa, na.rm = T),
+    med_gas = weighted.median(med_gas, w = sf_hh_cbsa, na.rm = T),
+    med_fuel = weighted.median(med_fuel, w = sf_hh_cbsa, na.rm = T),
+    med_ins_rate = weighted.median(med_ins_rate, w = sf_hh_cbsa, na.rm = T),
+    med_tax_rate = weighted.median(med_tax_rate, w = sf_hh_cbsa, na.rm = T),
+    med_elec_rate = weighted.median(med_elec_rate, w = sf_hh_cbsa, na.rm = T),
+    med_wat_rate = weighted.median(med_wat_rate, w = sf_hh_cbsa, na.rm = T),
+    med_gas_rate = weighted.median(med_gas_rate, w = sf_hh_cbsa, na.rm = T),
+    med_fuel_rate = weighted.median(med_fuel_rate, w = sf_hh_cbsa, na.rm = T)
   ) %>%
   ungroup() %>%
   mutate(
@@ -367,30 +410,29 @@ cbsa_data_final <- cbsa_data_final %>%
   ) 
 
 cbsa_data_final <- cbsa_data_final %>%
-  select(CBSA_NAME:sf_hh, med_utility_cost)
-
-cbsa_data_final <- cbsa_data_final %>%
-  mutate(med_utility_cost = med_utility_cost + med_utility_cost * (utility_data$utilities_yoy[1] / 100))
-
-cbsa_data_final <- cbsa_data_final %>%
   left_join(zillow_metro_data, by = c('CBSA_CODE' = 'GEOID')) %>%
   filter(!is.na(zillow_metro_name)) 
 
 cbsa_data_final <- cbsa_data_final %>%
-  select(CBSA_NAME:CBSA_CODE, sf_hh, med_utility_cost, ttm)
+  select(CBSA_NAME:sf_hh, med_ins_rate:med_fuel_rate, paymnt_ttm, price_ttm)
 
 cbsa_data_final <- cbsa_data_final %>%
-  mutate(ttm = ttm*12) %>%
-  rename(zillow_payment_20_down = ttm)
+  mutate(
+    paymnt_ttm = paymnt_ttm*12,
+    across(ends_with('_rate'), ~.*price_ttm)
+         ) %>%
+  rename(zillow_payment_20_down = paymnt_ttm, zillow_med_home_price = price_ttm)
+
+names(cbsa_data_final) <- str_replace(names(cbsa_data_final), pattern = "_rate", replacement = "")
 
 cbsa_data_final <- cbsa_data_final %>%
-  mutate(zillow_payment_20_down_plus_utilities = zillow_payment_20_down + med_utility_cost)
+  mutate(med_annual_home_payment = zillow_payment_20_down + med_ins + med_tax + med_elec + med_wat + med_gas + med_fuel)
 
 cbsa_data_final <- cbsa_data_final %>%
   left_join(income_data, by = c('CBSA_CODE' = 'GEOID'))
 
 cbsa_data_final <- cbsa_data_final %>%
-  mutate(affordability = zillow_payment_20_down_plus_utilities / median_income_renters)
+  mutate(renter_affordability = med_annual_home_payment / median_income_renters)
 
 # Prep final data for output ----
 
