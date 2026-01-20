@@ -35,6 +35,7 @@ output_file_path_for_puma_shp <- paste0("hidden-housing-costs/outputs/hidden_hou
 
 output_file_path_for_cleaned_data <- paste0("hidden-housing-costs/outputs/hidden_housing_costs_", acs_year, ".xlsx") # Set the file path to output the tabular file to.
 
+output_file_path_for_metro_affordablity_shp <-  paste0("hidden-housing-costs/outputs/metro_housing_affordability_data_", acs_year, ".shp") # Set the file path to output the tabular file to.
 output_file_path_for_metro_affordablity_data <- paste0("hidden-housing-costs/outputs/metro_housing_affordability_data_", acs_year, ".xlsx") # Set the file path to output the tabular file to.
 
 # Enter your own Census API key here. Visit this link if you do not yet have a Census API key: https://api.census.gov/data/key_signup.html
@@ -60,6 +61,7 @@ cbsa_geo <- cbsa_shp %>%
 
 cbsa_info <- cbsa_geo %>%
   st_drop_geometry()
+
 # Specifying parameters/variables for PUMS data ----
 
 PUMS_survey_type <- 'acs1' # or 'acs5' for 5-year estimates
@@ -93,7 +95,7 @@ puma_to_cbsa_crossover_file <- puma_to_cbsa_crossover_file %>%
 # Reading in PUMS data ----
 
 # Set the variables to pull from PUMS data; add to this vector or create your own!
-pums_variables_of_interest <- c('SERIALNO', 'PUMA','RT', 'WGTP', 'ADJHSG', 'TYPEHUGQ', 'BLD', 'TEN', "VACS", 'HFL', 'VALP', 'MRGX', 'MRGP',
+pums_variables_of_interest <- c('SERIALNO', 'PUMA','RT', 'WGTP', 'ADJHSG', 'TYPEHUGQ', 'BLD', 'TEN', "VACS", 'HFL', 'VALP', 'MRGX', 'MRGP', 'MRGI',
                                 # Costs 
                                 'CONP', 'ELEP', 'FULP', 'GASP', 'WATP', 'INSP', 'TAXAMT')
 
@@ -110,6 +112,17 @@ data <- get_pums(
   show_call = T,
   key = census_api_key
 )
+
+# Reading in metro population data ----
+
+cbsa_population <- get_estimates(geography = "cbsa", product = "population", show_call = T, year = 2024) 
+
+cbsa_population <- cbsa_population %>%
+  filter(variable == 'POPESTIMATE') %>%
+  select(GEOID, value) %>%
+  rename(CBSA_CODE = GEOID, pop_2024 = value) %>%
+  arrange(-pop_2024) %>%
+  mutate(pop_rank = row_number())
 
 # Read in metro-level household income data ----
 
@@ -359,22 +372,41 @@ cbsa_data_final <- data %>%
 cbsa_data_final <- cbsa_data_final %>%
   group_by(STATE, PUMA) %>%
   summarize(
-    sf_hh = sum(WGTP, na.rm = T),
-    med_val = weighted.median(VALP, w = WGTP, na.rm = T),
-    med_ins = weighted.median(INSP, w = WGTP, na.rm = T),
-    med_tax = weighted.median(TAXAMT, w = WGTP, na.rm = T),
-    med_elec = weighted.median(ELEP_recode, w = WGTP, na.rm = T),
-    med_wat = weighted.median(WATP_recode, w = WGTP, na.rm = T),
-    med_gas = weighted.median(GASP_recode, w = WGTP, na.rm = T),
-    med_fuel = weighted.median(FULP_recode, w = WGTP, na.rm = T),
-    med_ins_rate = weighted.median(ins_rate, na.rm = T),
-    med_tax_rate = weighted.median(prop_tax_rate, na.rm = T),
-    med_elec_rate = weighted.median(elec_rate, na.rm = T),
-    med_gas_rate = weighted.median(gas_rate, na.rm = T),
-    med_wat_rate = weighted.median(wat_rate, na.rm = T),
-    med_fuel_rate = weighted.median(fuel_rate, na.rm = T),
-    ) %>%
+    sf_hh = sum(WGTP, na.rm = TRUE),
+    med_val = weighted.median(VALP, w = WGTP, na.rm = TRUE),
+    med_ins = weighted.median(INSP[INSP != 0], w = WGTP[INSP != 0], na.rm = TRUE),
+    med_tax = weighted.median(TAXAMT, w = WGTP, na.rm = TRUE),
+    med_elec = weighted.median(ELEP_recode, w = WGTP, na.rm = TRUE),
+    med_wat = weighted.median(WATP_recode, w = WGTP, na.rm = TRUE),
+    med_gas = weighted.median(GASP_recode, w = WGTP, na.rm = TRUE),
+    med_fuel = weighted.median(FULP_recode, w = WGTP, na.rm = TRUE),
+    med_ins_rate = weighted.median(ins_rate[ins_rate != 0], w = WGTP[ins_rate != 0], na.rm = TRUE),
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = TRUE),
+    med_elec_rate = weighted.median(elec_rate, na.rm = TRUE),
+    med_gas_rate = weighted.median(gas_rate, na.rm = TRUE),
+    med_wat_rate = weighted.median(wat_rate, na.rm = TRUE),
+    med_fuel_rate = weighted.median(fuel_rate, na.rm = TRUE)
+  ) %>%
   ungroup()
+
+aggregate_data_final <- cbsa_data_final %>%
+  summarize(
+    sf_hh = sum(WGTP, na.rm = TRUE),
+    med_val = weighted.median(VALP, w = WGTP, na.rm = TRUE),
+    med_ins = weighted.median(INSP[INSP != 0], w = WGTP[INSP != 0], na.rm = TRUE),
+    med_tax = weighted.median(TAXAMT, w = WGTP, na.rm = TRUE),
+    med_elec = weighted.median(ELEP_recode, w = WGTP, na.rm = TRUE),
+    med_wat = weighted.median(WATP_recode, w = WGTP, na.rm = TRUE),
+    med_gas = weighted.median(GASP_recode, w = WGTP, na.rm = TRUE),
+    med_fuel = weighted.median(FULP_recode, w = WGTP, na.rm = TRUE),
+    med_ins_rate = weighted.median(ins_rate[ins_rate != 0], w = WGTP[ins_rate != 0], na.rm = TRUE),
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = TRUE),
+    med_elec_rate = weighted.median(elec_rate, na.rm = TRUE),
+    med_gas_rate = weighted.median(gas_rate, na.rm = TRUE),
+    med_wat_rate = weighted.median(wat_rate, na.rm = TRUE),
+    med_fuel_rate = weighted.median(fuel_rate, na.rm = TRUE)
+  )
+
 
 cbsa_data_final <- cbsa_data_final %>%
   left_join(puma_info, by = c('PUMA', 'STATE')) %>%
@@ -434,6 +466,17 @@ cbsa_data_final <- cbsa_data_final %>%
 cbsa_data_final <- cbsa_data_final %>%
   mutate(renter_affordability = med_annual_home_payment / median_income_renters)
 
+cbsa_data_final <- cbsa_data_final %>%
+  left_join(cbsa_population, by = 'CBSA_CODE')
+
+cbsa_data_final_spatial <- cbsa_data_final %>%
+  select(-CBSA_NAME) %>%
+  left_join(cbsa_geo, by = c('CBSA_CODE' = 'CBSA')) %>%
+  select(CBSA_NAME, CBSA_CODE, pop_2024, pop_rank, everything()) %>%
+  st_as_sf() %>%
+  arrange(pop_rank) %>%
+  filter(!is.na(renter_affordability))
+
 # Prep final data for output ----
 
 data_final <- data_cleaned %>%
@@ -479,3 +522,4 @@ data_final_spatial <- data_final %>%
 arc.check_product()
 
 arc.write(path = output_file_path_for_puma_shp, data = data_final_spatial, overwrite = T, validate = T)
+arc.write(path = output_file_path_for_metro_affordablity_shp, data = cbsa_data_final_spatial, overwrite = T, validate = T)
