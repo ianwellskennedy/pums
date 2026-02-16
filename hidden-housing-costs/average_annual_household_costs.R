@@ -57,7 +57,7 @@ cbsa_shp <- st_read(cbsa_shp_file_path) %>%
   rename(CBSA = CBSAFP, CBSA_NAME = NAME)
 
 cbsa_geo <- cbsa_shp %>%
-  select(CBSA, CBSA_NAME, geometry)
+  select(CBSA, geometry)
 
 cbsa_info <- cbsa_geo %>%
   st_drop_geometry()
@@ -369,6 +369,24 @@ cbsa_data_final <- data %>%
   distinct(SERIALNO, .keep_all = T) %>%
   filter(!BLD %in% c('1','10') & VACS == "0")
 
+aggregate_data_final <- cbsa_data_final %>%
+  summarize(
+    sf_hh = sum(WGTP, na.rm = TRUE),
+    med_val = weighted.median(VALP, w = WGTP, na.rm = TRUE),
+    med_ins = weighted.median(INSP[INSP != 0], w = WGTP[INSP != 0], na.rm = TRUE),
+    med_tax = weighted.median(TAXAMT, w = WGTP, na.rm = TRUE),
+    med_elec = weighted.median(ELEP_recode, w = WGTP, na.rm = TRUE),
+    med_wat = weighted.median(WATP_recode, w = WGTP, na.rm = TRUE),
+    med_gas = weighted.median(GASP_recode, w = WGTP, na.rm = TRUE),
+    med_fuel = weighted.median(FULP_recode, w = WGTP, na.rm = TRUE),
+    med_ins_rate = weighted.median(ins_rate[ins_rate != 0], w = WGTP[ins_rate != 0], na.rm = TRUE),
+    med_tax_rate = weighted.median(prop_tax_rate, na.rm = TRUE),
+    med_elec_rate = weighted.median(elec_rate, na.rm = TRUE),
+    med_gas_rate = weighted.median(gas_rate, na.rm = TRUE),
+    med_wat_rate = weighted.median(wat_rate, na.rm = TRUE),
+    med_fuel_rate = weighted.median(fuel_rate, na.rm = TRUE)
+  )
+
 cbsa_data_final <- cbsa_data_final %>%
   group_by(STATE, PUMA) %>%
   summarize(
@@ -389,23 +407,6 @@ cbsa_data_final <- cbsa_data_final %>%
   ) %>%
   ungroup()
 
-aggregate_data_final <- cbsa_data_final %>%
-  summarize(
-    sf_hh = sum(WGTP, na.rm = TRUE),
-    med_val = weighted.median(VALP, w = WGTP, na.rm = TRUE),
-    med_ins = weighted.median(INSP[INSP != 0], w = WGTP[INSP != 0], na.rm = TRUE),
-    med_tax = weighted.median(TAXAMT, w = WGTP, na.rm = TRUE),
-    med_elec = weighted.median(ELEP_recode, w = WGTP, na.rm = TRUE),
-    med_wat = weighted.median(WATP_recode, w = WGTP, na.rm = TRUE),
-    med_gas = weighted.median(GASP_recode, w = WGTP, na.rm = TRUE),
-    med_fuel = weighted.median(FULP_recode, w = WGTP, na.rm = TRUE),
-    med_ins_rate = weighted.median(ins_rate[ins_rate != 0], w = WGTP[ins_rate != 0], na.rm = TRUE),
-    med_tax_rate = weighted.median(prop_tax_rate, na.rm = TRUE),
-    med_elec_rate = weighted.median(elec_rate, na.rm = TRUE),
-    med_gas_rate = weighted.median(gas_rate, na.rm = TRUE),
-    med_wat_rate = weighted.median(wat_rate, na.rm = TRUE),
-    med_fuel_rate = weighted.median(fuel_rate, na.rm = TRUE)
-  )
 
 
 cbsa_data_final <- cbsa_data_final %>%
@@ -464,7 +465,15 @@ cbsa_data_final <- cbsa_data_final %>%
   left_join(income_data, by = c('CBSA_CODE' = 'GEOID'))
 
 cbsa_data_final <- cbsa_data_final %>%
-  mutate(renter_affordability = med_annual_home_payment / median_income_renters)
+  mutate(renter_affordability = med_annual_home_payment / median_income_renters,
+         ins_affordability = med_ins / median_income_renters,
+         tax_affordability = med_tax / median_income_renters,
+         elec_affordability = med_elec / median_income_renters,
+         wat_affordability = med_wat / median_income_renters,
+         gas_affordability = med_gas / median_income_renters,
+         fuel_affordability = med_fuel / median_income_renters,
+         mort_affordability = zillow_payment_20_down / median_income_renters
+         )
 
 cbsa_data_final <- cbsa_data_final %>%
   left_join(cbsa_population, by = 'CBSA_CODE')
@@ -519,6 +528,10 @@ data_final_spatial <- data_final %>%
   left_join(puma_geo, by = c('STATE', 'PUMA')) %>%
   st_as_sf()
 
+cbsa_data_final_spatial <- cbsa_data_final %>%
+  left_join(cbsa_geo, by = c('CBSA_CODE' = 'CBSA')) %>%
+  st_as_sf()
+  
 arc.check_product()
 
 arc.write(path = output_file_path_for_puma_shp, data = data_final_spatial, overwrite = T, validate = T)
