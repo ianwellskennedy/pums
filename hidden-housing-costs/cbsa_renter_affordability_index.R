@@ -7,6 +7,8 @@ library(sf)
 library(openxlsx)
 library(zoo)
 library(spatstat)
+library(tigris)
+library(arcgisbinding)
 
 # Configuration
 config <- list(
@@ -21,7 +23,8 @@ config <- list(
   zillow_payments = "C:/Users/ianwe/Downloads/Metro_mortgage_payment_downpayment_0.20_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv",
   zillow_prices = "C:/Users/ianwe/Downloads/Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv",
   zillow_crosswalk = "C:/Users/ianwe/Downloads/github/zillow/inputs/zillow_metro_crosswalk.xlsx",
-  output_dir = "hidden-housing-costs/outputs/"
+  output_dir = "hidden-housing-costs/outputs/",
+  output_file_path_spatial_data = "hidden-housing-costs/outputs/metro_affordability_data_2024.shp"
 )
 
 census_api_key(config$census_api_key)
@@ -379,7 +382,42 @@ cat("\n✓ Affordability index calculated for", nrow(affordability_current), "CB
 cat("✓ Output saved to:", paste0(config$output_dir, "cbsa_affordability_", 
                                  format(config$reference_month, "%Y_%m"), ".xlsx\n"))
 
-# 11. MONTHLY TIME SERIES AUTOMATION ----
+# 11. SPATIAL JOIN AND MAPPING ----
+
+library(tigris)
+
+# Pull CBSA boundaries from Census TIGER via tigris
+cbsa_boundaries <- core_based_statistical_areas(
+  cb = TRUE,       # Use cartographic boundary (simplified, better for mapping)
+  year = 2023,     # Match your crosswalk vintage
+  resolution = "5m" # Options: "500k", "5m", "20m" — 5m is a good balance
+) %>%
+  select(GEOID, geometry) %>%
+  mutate(GEOID = as.character(GEOID))
+
+cat("✓ CBSA boundaries loaded:", nrow(cbsa_boundaries), "features\n")
+
+# Join affordability data to spatial boundaries
+affordability_spatial <- affordability_current %>%
+  left_join(cbsa_boundaries, by = c("CBSA_CODE" = "GEOID")) %>%
+  st_as_sf() 
+
+cat("✓ Spatial join complete:", nrow(affordability_spatial), "CBSAs with geometry\n")
+cat("  Dropped (no affordability data):", nrow(cbsa_boundaries) - nrow(affordability_spatial), "\n")
+
+# Quick sanity check — should be an sf object
+cat("  CRS:", st_crs(affordability_spatial)$srid, "\n")
+
+
+arc.check_product()
+
+# Optional: save as GeoJSON or shapefile
+arc.write(data = affordability_spatial, path = config$output_file_path_spatial_data, 
+          overwrite = TRUE, validate = TRUE)
+
+cat("✓ Spatial file saved\n")
+
+# 12. MONTHLY TIME SERIES AUTOMATION ----
 
 #' Generate monthly affordability time series
 generate_monthly_timeseries <- function(
