@@ -1,3 +1,7 @@
+# ============================================================================
+# RENTER FIRST-TIME HOMEBUYER AFFORDABILITY INDEX
+# ============================================================================
+
 # 0. SETUP ----
 
 library(tidyverse)
@@ -13,18 +17,24 @@ library(arcgisbinding)
 # Configuration
 config <- list(
   acs_year = 2024,
-  reference_month = as.Date("2024-11-30"),  # Use month-end to match Zillow
+  reference_month = as.Date("2026-02-28"),  # Use month-end to match Zillow
   
   # API keys
   census_api_key = "6dd2c4143fc5f308c1120021fb663c15409f3757",
   
   # File paths
   puma_cbsa_crosswalk = "C:/Users/ianwe/Downloads/shapefiles/crossover_files/puma_2020_to_cbsa_2023.xlsx",
-  zillow_payments = "C:/Users/ianwe/Downloads/Metro_mortgage_payment_downpayment_0.20_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv",
-  zillow_prices = "C:/Users/ianwe/Downloads/Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv",
-  zillow_crosswalk = "C:/Users/ianwe/Downloads/github/zillow/inputs/zillow_metro_crosswalk.xlsx",
-  output_dir = "hidden-housing-costs/outputs/",
-  output_file_path_spatial_data = "hidden-housing-costs/outputs/metro_affordability_data_2024.shp"
+  zillow_payments     = "C:/Users/ianwe/Downloads/Metro_mortgage_payment_downpayment_0.20_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv",
+  zillow_prices       = "C:/Users/ianwe/Downloads/Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv",
+  zillow_crosswalk    = "C:/Users/ianwe/Downloads/github/zillow/inputs/zillow_metro_crosswalk.xlsx",
+  output_dir          = "hidden-housing-costs/outputs/",
+  output_file_path_spatial_data = "hidden-housing-costs/outputs/metro_affordability_data_2024.shp",
+  
+  # Zillow download URLs (no timestamp parameter needed — these are stable)
+  # Data is updated on the 16th of each month. If running before the 16th,
+  # the file will reflect the prior month; update reference_month accordingly.
+  zillow_payments_url = "https://files.zillowstatic.com/research/public_csvs/mortgage_payment/Metro_mortgage_payment_downpayment_0.20_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv",
+  zillow_prices_url   = "https://files.zillowstatic.com/research/public_csvs/zhvi/Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
 )
 
 census_api_key(config$census_api_key)
@@ -52,9 +62,9 @@ recode_utility_costs <- function(df) {
       WATP_annual = if_else(WATP %in% c(1, 2), 0, as.numeric(WATP)),
       FULP_annual = if_else(FULP %in% c(1, 2), 0, as.numeric(FULP)),
       # Other costs
-      INSP_annual = as.numeric(INSP),
+      INSP_annual  = as.numeric(INSP),
       TAXAMT_annual = as.numeric(TAXAMT),
-      VALP_num = as.numeric(VALP)
+      VALP_num     = as.numeric(VALP)
     )
 }
 
@@ -62,13 +72,13 @@ recode_utility_costs <- function(df) {
 calculate_cost_rates <- function(df) {
   df %>%
     mutate(
-      ins_rate = INSP_annual / VALP_num,
-      hoa_rate = CONP_annual / VALP_num,
-      tax_rate = TAXAMT_annual / VALP_num,
-      elec_rate = ELEP_annual / VALP_num,
-      gas_rate = GASP_annual / VALP_num,
-      water_rate = WATP_annual / VALP_num,
-      fuel_rate = FULP_annual / VALP_num
+      ins_rate   = INSP_annual   / VALP_num,
+      hoa_rate   = CONP_annual   / VALP_num,
+      tax_rate   = TAXAMT_annual / VALP_num,
+      elec_rate  = ELEP_annual   / VALP_num,
+      gas_rate   = GASP_annual   / VALP_num,
+      water_rate = WATP_annual   / VALP_num,
+      fuel_rate  = FULP_annual   / VALP_num
     ) %>%
     # Remove infinite/NA rates from division by zero
     mutate(across(ends_with("_rate"), ~if_else(is.infinite(.) | is.nan(.), NA_real_, .)))
@@ -88,12 +98,24 @@ clean_zillow_timeseries <- function(filepath, value_col_name) {
       values_to = value_col_name
     ) %>%
     mutate(
-      date = as.Date(date, format = "%Y-%m-%d"),
+      date     = as.Date(date, format = "%Y-%m-%d"),
       RegionID = as.character(RegionID)
     ) %>%
     # Remove rows with NA dates or values
     filter(!is.na(date), !is.na(.data[[value_col_name]])) %>%
     select(zillow_metro_code = RegionID, date, all_of(value_col_name))
+}
+
+#' Download latest Zillow CSV and save to local path
+download_zillow_file <- function(url, dest_path) {
+  tryCatch({
+    download.file(url, destfile = dest_path, mode = "wb", quiet = TRUE)
+    cat("✓ Downloaded:", basename(dest_path), "\n")
+    cat("  File size:", round(file.size(dest_path) / 1024, 1), "KB\n")
+    cat("  Downloaded at:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+  }, error = function(e) {
+    stop("Failed to download ", url, "\n  Error: ", e$message)
+  })
 }
 
 # 2. LOAD REFERENCE DATA ----
@@ -105,20 +127,36 @@ puma_cbsa_xwalk <- read_xlsx(config$puma_cbsa_crosswalk) %>%
   select(STATE, PUMA, CBSA_CODE, CBSA_NAME, ALLOC_FACTOR) %>%
   mutate(
     ALLOC_FACTOR = as.numeric(ALLOC_FACTOR),
-    CBSA_CODE = as.character(CBSA_CODE)
+    CBSA_CODE    = as.character(CBSA_CODE)
   )
 
 # Zillow metro code to CBSA crosswalk
 zillow_cbsa_xwalk <- read_xlsx(config$zillow_crosswalk) %>%
   mutate(
     zillow_metro_code = as.character(zillow_metro_code),
-    GEOID = as.character(GEOID)
+    GEOID             = as.character(GEOID)
   )
 
-# 3. LOAD ZILLOW DATA ----
+# 3. DOWNLOAD AND LOAD ZILLOW DATA ----
+
+cat("\n=== DOWNLOADING ZILLOW DATA ===\n")
+
+# Download fresh files from Zillow's public S3 bucket.
+# Note: Zillow updates these on the 16th of each month.
+download_zillow_file(
+  url       = config$zillow_payments_url,
+  dest_path = config$zillow_payments
+)
+
+download_zillow_file(
+  url       = config$zillow_prices_url,
+  dest_path = config$zillow_prices
+)
+
+cat("\n=== LOADING ZILLOW DATA ===\n")
 
 zillow_payments <- clean_zillow_timeseries(config$zillow_payments, "mortgage_payment")
-zillow_prices <- clean_zillow_timeseries(config$zillow_prices, "home_price")
+zillow_prices   <- clean_zillow_timeseries(config$zillow_prices,   "home_price")
 
 zillow_data <- zillow_payments %>%
   inner_join(zillow_prices, by = c("zillow_metro_code", "date")) %>%
@@ -129,7 +167,7 @@ zillow_data <- zillow_payments %>%
 
 cat("\n✓ Zillow data loaded:", nrow(zillow_data), "records\n")
 cat("  Date range:", as.character(min(zillow_data$date)), "to", as.character(max(zillow_data$date)), "\n")
-cat("  Reference month (", as.character(config$reference_month), ") present?:", 
+cat("  Reference month (", as.character(config$reference_month), ") present?:",
     config$reference_month %in% zillow_data$date, "\n")
 
 # 4. LOAD PUMS DATA ----
@@ -140,17 +178,17 @@ pums_vars <- c(
 )
 
 pums_data <- get_pums(
-  variables = pums_vars,
-  year = config$acs_year,
-  survey = "acs1",
-  state = "all",  # All states for national coverage
+  variables        = pums_vars,
+  year             = config$acs_year,
+  survey           = "acs1",
+  state            = "all",  # All states for national coverage
   variables_filter = list(
-    TEN = 1:2,  # Owned units (with/without mortgage)
-    VACS = 0    # Occupied units only
+    TEN  = 1:2,  # Owned units (with/without mortgage)
+    VACS = 0     # Occupied units only
   ),
-  recode = TRUE,
+  recode    = TRUE,
   show_call = TRUE,
-  key = config$census_api_key
+  key       = config$census_api_key
 )
 
 cat("✓ PUMS data loaded:", nrow(pums_data), "records\n")
@@ -160,9 +198,9 @@ cat("✓ PUMS data loaded:", nrow(pums_data), "records\n")
 income_data <- get_acs(
   geography = "cbsa",
   variables = "B25119_003",  # Median household income - renter occupied
-  year = config$acs_year,
-  survey = "acs1",
-  key = config$census_api_key
+  year      = config$acs_year,
+  survey    = "acs1",
+  key       = config$census_api_key
 ) %>%
   select(GEOID, median_income_renters = estimate) %>%
   mutate(GEOID = as.character(GEOID))
@@ -172,9 +210,9 @@ cat("✓ Income data loaded:", nrow(income_data), "CBSAs\n")
 population_data <- get_acs(
   geography = "cbsa",
   variables = "B01003_001",  # Total population
-  year = config$acs_year,
-  survey = "acs1",
-  key = config$census_api_key
+  year      = config$acs_year,
+  survey    = "acs1",
+  key       = config$census_api_key
 ) %>%
   select(GEOID, population = estimate) %>%
   mutate(GEOID = as.character(GEOID))
@@ -210,19 +248,19 @@ cbsa_cost_rates <- pums_processed %>%
     # Weighted medians of rates (exclude zeros for insurance and HOA)
     med_ins_rate = weighted.median(
       ins_rate[ins_rate > 0],
-      w = weight[ins_rate > 0],
+      w  = weight[ins_rate > 0],
       na.rm = TRUE
     ),
     med_hoa_rate = weighted.median(
       hoa_rate[hoa_rate > 0],
-      w = weight[hoa_rate > 0],
+      w  = weight[hoa_rate > 0],
       na.rm = TRUE
     ),
-    med_tax_rate = weighted.median(tax_rate, w = weight, na.rm = TRUE),
-    med_elec_rate = weighted.median(elec_rate, w = weight, na.rm = TRUE),
-    med_gas_rate = weighted.median(gas_rate, w = weight, na.rm = TRUE),
+    med_tax_rate   = weighted.median(tax_rate,   w = weight, na.rm = TRUE),
+    med_elec_rate  = weighted.median(elec_rate,  w = weight, na.rm = TRUE),
+    med_gas_rate   = weighted.median(gas_rate,   w = weight, na.rm = TRUE),
     med_water_rate = weighted.median(water_rate, w = weight, na.rm = TRUE),
-    med_fuel_rate = weighted.median(fuel_rate, w = weight, na.rm = TRUE),
+    med_fuel_rate  = weighted.median(fuel_rate,  w = weight, na.rm = TRUE),
     .groups = "drop"
   ) %>%
   # Override California property tax rates to 1% (Prop 13)
@@ -237,17 +275,17 @@ cat("✓ CBSA cost rates calculated:", nrow(cbsa_cost_rates), "CBSAs\n")
 
 # Validate cost rates
 cat("\n✓ Cost rate validation:\n")
-cat("  Insurance rate range:", 
+cat("  Insurance rate range:",
     round(min(cbsa_cost_rates$med_ins_rate, na.rm = TRUE), 4), "to",
     round(max(cbsa_cost_rates$med_ins_rate, na.rm = TRUE), 4), "\n")
-cat("  HOA rate range:", 
+cat("  HOA rate range:",
     round(min(cbsa_cost_rates$med_hoa_rate, na.rm = TRUE), 4), "to",
     round(max(cbsa_cost_rates$med_hoa_rate, na.rm = TRUE), 4), "\n")
-cat("  Tax rate range:", 
+cat("  Tax rate range:",
     round(min(cbsa_cost_rates$med_tax_rate, na.rm = TRUE), 4), "to",
     round(max(cbsa_cost_rates$med_tax_rate, na.rm = TRUE), 4), "\n")
 cat("  CBSAs with missing insurance rates:", sum(is.na(cbsa_cost_rates$med_ins_rate)), "\n")
-cat("  CBSAs with missing HOA rates:", sum(is.na(cbsa_cost_rates$med_hoa_rate)), "\n")
+cat("  CBSAs with missing HOA rates:",       sum(is.na(cbsa_cost_rates$med_hoa_rate)), "\n")
 
 # 8. CALCULATE AFFORDABILITY ----
 
@@ -267,7 +305,7 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
     arrange(date) %>%
     mutate(
       mortgage_ttm = rollmean(mortgage_payment_annual, k = 12, align = "right", fill = NA),
-      price_ttm = rollmean(home_price, k = 12, align = "right", fill = NA)
+      price_ttm    = rollmean(home_price,              k = 12, align = "right", fill = NA)
     ) %>%
     filter(date == reference_date) %>%
     ungroup() %>%
@@ -279,28 +317,28 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
   # Calculate affordability
   affordability <- cost_rates_df %>%
     inner_join(zillow_month, by = c("CBSA_CODE" = "GEOID")) %>%
-    inner_join(income_df, by = c("CBSA_CODE" = "GEOID")) %>%
+    inner_join(income_df,    by = c("CBSA_CODE" = "GEOID")) %>%
     left_join(population_df, by = c("CBSA_CODE" = "GEOID")) %>%
     mutate(
       # Apply cost rates to current Zillow prices
-      annual_insurance = med_ins_rate * price_ttm,
-      annual_hoa = med_hoa_rate * price_ttm,
-      annual_tax = med_tax_rate * price_ttm,
-      annual_elec = med_elec_rate * price_ttm,
-      annual_gas = med_gas_rate * price_ttm,
-      annual_water = med_water_rate * price_ttm,
-      annual_fuel = med_fuel_rate * price_ttm,
+      annual_insurance = med_ins_rate   * price_ttm,
+      annual_hoa       = med_hoa_rate   * price_ttm,
+      annual_tax       = med_tax_rate   * price_ttm,
+      annual_elec      = med_elec_rate  * price_ttm,
+      annual_gas       = med_gas_rate   * price_ttm,
+      annual_water     = med_water_rate * price_ttm,
+      annual_fuel      = med_fuel_rate  * price_ttm,
       
       # Total annual housing cost
       total_annual_cost = mortgage_ttm + annual_insurance + annual_tax +
         annual_elec + annual_gas + annual_water + annual_fuel,
       
       # Component affordability ratios
-      mortgage_burden = mortgage_ttm / median_income_renters,
-      insurance_burden = annual_insurance / median_income_renters,
-      hoa_burden = annual_hoa / median_income_renters,
-      tax_burden = annual_tax / median_income_renters,
-      utility_burden = (annual_elec + annual_gas + annual_water + annual_fuel) / median_income_renters,
+      mortgage_burden   = mortgage_ttm  / median_income_renters,
+      insurance_burden  = annual_insurance / median_income_renters,
+      hoa_burden        = annual_hoa     / median_income_renters,
+      tax_burden        = annual_tax     / median_income_renters,
+      utility_burden    = (annual_elec + annual_gas + annual_water + annual_fuel) / median_income_renters,
       
       # Total affordability ratio
       renter_affordability_ratio = total_annual_cost / median_income_renters,
@@ -311,9 +349,9 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
     select(
       CBSA_CODE, CBSA_NAME, reference_date, population, n_units,
       median_income_renters, price_ttm, mortgage_ttm,
-      renter_affordability_ratio, mortgage_burden, insurance_burden, 
+      renter_affordability_ratio, mortgage_burden, insurance_burden,
       tax_burden, utility_burden, hoa_burden,
-      total_annual_cost, annual_insurance, annual_tax, annual_elec, 
+      total_annual_cost, annual_insurance, annual_tax, annual_elec,
       annual_gas, annual_water, annual_fuel, annual_hoa,
       everything()
     )
@@ -340,11 +378,11 @@ cat("=== VALIDATION SUMMARY ===\n")
 
 affordability_current %>%
   summarize(
-    n_metros = n(),
-    total_population = sum(population, na.rm = TRUE),
-    pct_missing_income = round(mean(is.na(median_income_renters)) * 100, 1),
-    median_affordability = round(median(renter_affordability_ratio, na.rm = TRUE), 3),
-    mean_affordability = round(mean(renter_affordability_ratio, na.rm = TRUE), 3),
+    n_metros              = n(),
+    total_population      = sum(population, na.rm = TRUE),
+    pct_missing_income    = round(mean(is.na(median_income_renters)) * 100, 1),
+    median_affordability  = round(median(renter_affordability_ratio, na.rm = TRUE), 3),
+    mean_affordability    = round(mean(renter_affordability_ratio,   na.rm = TRUE), 3),
     # Population-weighted average
     pop_weighted_affordability = round(
       sum(renter_affordability_ratio * population, na.rm = TRUE) / sum(population, na.rm = TRUE), 3
@@ -357,7 +395,7 @@ affordability_current %>%
 cat("\nTop 10 Most Expensive (by affordability ratio):\n")
 affordability_current %>%
   arrange(desc(renter_affordability_ratio)) %>%
-  select(CBSA_NAME, population, renter_affordability_ratio, 
+  select(CBSA_NAME, population, renter_affordability_ratio,
          median_income_renters, total_annual_cost) %>%
   head(10) %>%
   print()
@@ -365,7 +403,7 @@ affordability_current %>%
 cat("\nTop 10 Most Affordable:\n")
 affordability_current %>%
   arrange(renter_affordability_ratio) %>%
-  select(CBSA_NAME, population, renter_affordability_ratio, 
+  select(CBSA_NAME, population, renter_affordability_ratio,
          median_income_renters, total_annual_cost) %>%
   head(10) %>%
   print()
@@ -379,18 +417,16 @@ write.xlsx(
 )
 
 cat("\n✓ Affordability index calculated for", nrow(affordability_current), "CBSAs\n")
-cat("✓ Output saved to:", paste0(config$output_dir, "cbsa_affordability_", 
+cat("✓ Output saved to:", paste0(config$output_dir, "cbsa_affordability_",
                                  format(config$reference_month, "%Y_%m"), ".xlsx\n"))
 
 # 11. SPATIAL JOIN AND MAPPING ----
 
-library(tigris)
-
 # Pull CBSA boundaries from Census TIGER via tigris
 cbsa_boundaries <- core_based_statistical_areas(
-  cb = TRUE,       # Use cartographic boundary (simplified, better for mapping)
-  year = 2023,     # Match your crosswalk vintage
-  resolution = "5m" # Options: "500k", "5m", "20m" — 5m is a good balance
+  cb         = TRUE,    # Use cartographic boundary (simplified, better for mapping)
+  year       = 2023,    # Match your crosswalk vintage
+  resolution = "5m"     # Options: "500k", "5m", "20m" — 5m is a good balance
 ) %>%
   select(GEOID, geometry) %>%
   mutate(GEOID = as.character(GEOID))
@@ -400,7 +436,7 @@ cat("✓ CBSA boundaries loaded:", nrow(cbsa_boundaries), "features\n")
 # Join affordability data to spatial boundaries
 affordability_spatial <- affordability_current %>%
   left_join(cbsa_boundaries, by = c("CBSA_CODE" = "GEOID")) %>%
-  st_as_sf() 
+  st_as_sf()
 
 cat("✓ Spatial join complete:", nrow(affordability_spatial), "CBSAs with geometry\n")
 cat("  Dropped (no affordability data):", nrow(cbsa_boundaries) - nrow(affordability_spatial), "\n")
@@ -408,12 +444,15 @@ cat("  Dropped (no affordability data):", nrow(cbsa_boundaries) - nrow(affordabi
 # Quick sanity check — should be an sf object
 cat("  CRS:", st_crs(affordability_spatial)$srid, "\n")
 
-
 arc.check_product()
 
-# Optional: save as GeoJSON or shapefile
-arc.write(data = affordability_spatial, path = config$output_file_path_spatial_data, 
-          overwrite = TRUE, validate = TRUE)
+# Save as shapefile via ArcGIS binding
+arc.write(
+  data      = affordability_spatial,
+  path      = config$output_file_path_spatial_data,
+  overwrite = TRUE,
+  validate  = TRUE
+)
 
 cat("✓ Spatial file saved\n")
 
@@ -431,8 +470,8 @@ generate_monthly_timeseries <- function(
   
   # Find all available month-end dates in Zillow data within range
   available_dates <- unique(zillow_df$date)
-  target_dates <- available_dates[available_dates >= start_date & available_dates <= end_date]
-  target_dates <- sort(target_dates)
+  target_dates    <- available_dates[available_dates >= start_date & available_dates <= end_date]
+  target_dates    <- sort(target_dates)
   
   cat("\nGenerating time series for", length(target_dates), "months\n")
   cat("From:", as.character(min(target_dates)), "to", as.character(max(target_dates)), "\n\n")
@@ -441,7 +480,6 @@ generate_monthly_timeseries <- function(
   results <- map_dfr(target_dates, function(ref_date) {
     message("Processing: ", ref_date)
     
-    # Calculate affordability for this month
     tryCatch({
       calculate_affordability(
         zillow_df,
@@ -467,24 +505,24 @@ generate_monthly_timeseries <- function(
 #   income_data,
 #   population_data,
 #   start_date = as.Date("2020-01-01"),
-#   end_date = config$reference_month
+#   end_date   = config$reference_month
 # )
-# 
+#
 # # Output time series (long format)
 # write.xlsx(
 #   affordability_timeseries,
 #   paste0(config$output_dir, "cbsa_affordability_timeseries_long.xlsx")
 # )
-# 
+#
 # # Reshape to wide format (optional - one row per CBSA)
 # affordability_wide <- affordability_timeseries %>%
 #   select(CBSA_CODE, CBSA_NAME, reference_date, renter_affordability_ratio) %>%
 #   pivot_wider(
-#     names_from = reference_date,
-#     values_from = renter_affordability_ratio,
+#     names_from   = reference_date,
+#     values_from  = renter_affordability_ratio,
 #     names_prefix = "afford_"
 #   )
-# 
+#
 # write.xlsx(
 #   affordability_wide,
 #   paste0(config$output_dir, "cbsa_affordability_timeseries_wide.xlsx")
