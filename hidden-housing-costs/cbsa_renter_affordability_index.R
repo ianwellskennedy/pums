@@ -1,7 +1,3 @@
-# ============================================================================
-# RENTER FIRST-TIME HOMEBUYER AFFORDABILITY INDEX
-# ============================================================================
-
 # 0. SETUP ----
 
 library(tidyverse)
@@ -499,35 +495,31 @@ generate_monthly_timeseries <- function(
 
 # Example: Generate time series from Jan 2020 to current
 # (Uncomment to run)
-# affordability_timeseries <- generate_monthly_timeseries(
-#   zillow_data,
-#   cbsa_cost_rates,
-#   income_data,
-#   population_data,
-#   start_date = as.Date("2020-01-01"),
-#   end_date   = config$reference_month
-# )
-#
-# # Output time series (long format)
-# write.xlsx(
-#   affordability_timeseries,
-#   paste0(config$output_dir, "cbsa_affordability_timeseries_long.xlsx")
-# )
-#
-# # Reshape to wide format (optional - one row per CBSA)
-# affordability_wide <- affordability_timeseries %>%
-#   select(CBSA_CODE, CBSA_NAME, reference_date, renter_affordability_ratio) %>%
-#   pivot_wider(
-#     names_from   = reference_date,
-#     values_from  = renter_affordability_ratio,
-#     names_prefix = "afford_"
-#   )
-#
-# write.xlsx(
-#   affordability_wide,
-#   paste0(config$output_dir, "cbsa_affordability_timeseries_wide.xlsx")
-# )
+affordability_timeseries <- generate_monthly_timeseries(
+  zillow_data,
+  cbsa_cost_rates,
+  income_data,
+  population_data,
+  start_date = as.Date("2020-01-01"),
+  end_date   = config$reference_month
+)
 
-# ============================================================================
-# END OF SCRIPT
-# ============================================================================
+# Output time series (long format)
+write.xlsx(
+  affordability_timeseries,
+  paste0(config$output_dir, "cbsa_affordability_timeseries_long.xlsx")
+)
+
+# Reshape to wide format (optional - one row per CBSA)
+affordability_wide <- affordability_timeseries %>%
+  select(CBSA_CODE, CBSA_NAME, reference_date, renter_affordability_ratio) %>%
+  pivot_wider(
+    names_from   = reference_date,
+    values_from  = renter_affordability_ratio,
+    names_prefix = "afford_"
+  )
+
+write.xlsx(
+  affordability_wide,
+  paste0(config$output_dir, "cbsa_affordability_timeseries_wide.xlsx")
+)
