@@ -13,7 +13,7 @@ library(arcgisbinding)
 # Configuration
 config <- list(
   acs_year = 2024,
-  reference_month = as.Date("2026-02-28"),  # Use month-end to match Zillow
+  reference_month = as.Date("2026-03-31"),  # Use month-end to match Zillow
   
   # API keys
   census_api_key = "6dd2c4143fc5f308c1120021fb663c15409f3757",
@@ -334,7 +334,11 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
       insurance_burden  = annual_insurance / median_income_renters,
       hoa_burden        = annual_hoa     / median_income_renters,
       tax_burden        = annual_tax     / median_income_renters,
-      utility_burden    = (annual_elec + annual_gas + annual_water + annual_fuel) / median_income_renters,
+      elec_burden       = annual_elec     / median_income_renters,
+      gas_burden        = annual_gas     / median_income_renters,
+      wat_burden        = annual_water     / median_income_renters,
+      fuel_burden       = annual_fuel     / median_income_renters,
+      utility_burden    = (annual_elec + annual_gas + annual_fuel) / median_income_renters,
       
       # Total affordability ratio
       renter_affordability_ratio = total_annual_cost / median_income_renters,
@@ -346,7 +350,7 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
       CBSA_CODE, CBSA_NAME, reference_date, population, n_units,
       median_income_renters, price_ttm, mortgage_ttm,
       renter_affordability_ratio, mortgage_burden, insurance_burden,
-      tax_burden, utility_burden, hoa_burden,
+      tax_burden, elec_burden, gas_burden, fuel_burden, wat_burden, utility_burden, hoa_burden,
       total_annual_cost, annual_insurance, annual_tax, annual_elec,
       annual_gas, annual_water, annual_fuel, annual_hoa,
       everything()
