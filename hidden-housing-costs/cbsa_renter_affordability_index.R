@@ -13,7 +13,7 @@ library(arcgisbinding)
 # Configuration
 config <- list(
   acs_year = 2024,
-  reference_month = as.Date("2026-03-31"),  # Use month-end to match Zillow
+  reference_month = as.Date("2026-06-30"),  # Q2 2026; use month-end to match Zillow
   
   # API keys
   census_api_key = "6dd2c4143fc5f308c1120021fb663c15409f3757",
