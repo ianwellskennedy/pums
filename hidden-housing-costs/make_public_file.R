@@ -21,7 +21,7 @@ columns <- c(
   CBSA_NAME                  = "CBSA_NAME",
   reference_date             = "Reference date",
   population                 = "Population",
-  n_units                    = "Housing units",
+  n_units                    = "Owner-occupied units",
   median_income_renters      = "Median Household Income: Renters",
   price                  = "Typical-value Home Price (from Zillow)",
   mortgage_annual               = "Total annual mortgage payment on purchase of a typical-value home**",
