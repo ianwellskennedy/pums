@@ -19,9 +19,9 @@ suppressMessages({
 })
 
 config <- list(
-  reference_month = as.Date("2026-06-30"),  # Q2 2026; month-end to match Zillow
+  reference_month = as.Date("2026-09-30"),  # Q3 2026; month-end to match Zillow
 
-  prior_output = "hidden-housing-costs/outputs/cbsa_affordability_2026_03.xlsx",
+  prior_output = "hidden-housing-costs/outputs/cbsa_affordability_2026_06.xlsx",
   output_dir   = "hidden-housing-costs/outputs/",
 
   # Zillow updates these on the 16th of each month. Running before the 16th
