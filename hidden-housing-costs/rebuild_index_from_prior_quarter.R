@@ -266,6 +266,7 @@ cat("\nQoQ change — median:", sprintf("%+.5f", median(qoq$chg)),
 # 8. OUTPUT ----
 
 out_path <- paste0(config$output_dir, "cbsa_affordability_",
-                   format(config$reference_month, "%Y_%m"), ".xlsx")
-write.xlsx(affordability_current, out_path)
-cat("\nOutput saved to:", out_path, "\n")
+                   format(config$reference_month, "%Y_%m"))
+write.xlsx(affordability_current, paste0(out_path, ".xlsx"))
+write_csv(affordability_current, paste0(out_path, ".csv"))
+cat("\nOutput saved to:", out_path, "(.xlsx, .csv)\n")
