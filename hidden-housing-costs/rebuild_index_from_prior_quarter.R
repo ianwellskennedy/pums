@@ -133,20 +133,11 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df,
          "Available dates near this: ", paste(available, collapse = ", "))
   }
 
-  # Trailing-twelve-month mean ending at the reference date, equivalent to the
-  # zoo::rollmean(k = 12, align = "right") used in the full pipeline.
+  # Zillow values for the reference month, as in the full pipeline. Zillow's
+  # series are already smoothed and seasonally adjusted.
   zillow_month <- zillow_df %>%
-    filter(date <= reference_date) %>%
-    group_by(GEOID) %>%
-    arrange(date, .by_group = TRUE) %>%
-    summarize(
-      mortgage_ttm = if (n() >= 12) mean(tail(mortgage_payment_annual, 12)) else NA_real_,
-      price_ttm    = if (n() >= 12) mean(tail(home_price, 12)) else NA_real_,
-      last_date    = max(date),
-      .groups = "drop"
-    ) %>%
-    filter(last_date == reference_date, !is.na(mortgage_ttm), !is.na(price_ttm)) %>%
-    select(GEOID, mortgage_ttm, price_ttm)
+    filter(date == reference_date) %>%
+    select(GEOID, mortgage_annual = mortgage_payment_annual, price = home_price)
 
   cat("  Zillow metros at", as.character(reference_date), ":", nrow(zillow_month), "\n")
 
@@ -155,19 +146,19 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df,
     inner_join(income_df,    by = "CBSA_CODE") %>%
     left_join(population_df, by = "CBSA_CODE") %>%
     mutate(
-      annual_insurance = med_ins_rate   * price_ttm,
-      annual_hoa       = med_hoa_rate   * price_ttm,
-      annual_tax       = med_tax_rate   * price_ttm,
-      annual_elec      = med_elec_rate  * price_ttm,
-      annual_gas       = med_gas_rate   * price_ttm,
-      annual_water     = med_water_rate * price_ttm,
-      annual_fuel      = med_fuel_rate  * price_ttm,
+      annual_insurance = med_ins_rate   * price,
+      annual_hoa       = med_hoa_rate   * price,
+      annual_tax       = med_tax_rate   * price,
+      annual_elec      = med_elec_rate  * price,
+      annual_gas       = med_gas_rate   * price,
+      annual_water     = med_water_rate * price,
+      annual_fuel      = med_fuel_rate  * price,
 
       # HOA is deliberately excluded from the total, matching the full pipeline
-      total_annual_cost = mortgage_ttm + annual_insurance + annual_tax +
+      total_annual_cost = mortgage_annual + annual_insurance + annual_tax +
         annual_elec + annual_gas + annual_water + annual_fuel,
 
-      mortgage_burden  = mortgage_ttm     / median_income_renters,
+      mortgage_burden  = mortgage_annual     / median_income_renters,
       insurance_burden = annual_insurance / median_income_renters,
       hoa_burden       = annual_hoa       / median_income_renters,
       tax_burden       = annual_tax       / median_income_renters,
@@ -182,7 +173,7 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df,
     ) %>%
     select(
       CBSA_CODE, CBSA_NAME, reference_date, population, n_units,
-      median_income_renters, price_ttm, mortgage_ttm,
+      median_income_renters, price, mortgage_annual,
       renter_affordability_ratio, mortgage_burden, insurance_burden,
       tax_burden, elec_burden, gas_burden, fuel_burden, wat_burden,
       utility_burden, hoa_burden,
@@ -196,6 +187,8 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df,
 # Recompute the prior quarter's reference date from current Zillow data and
 # compare. Small differences are expected — Zillow revises its smoothed,
 # seasonally adjusted series — but a large gap points to a bad metro match.
+# Outputs from before Q3 2026 used 12-month averages (price_ttm); for those the
+# gap also includes the switch to reference-month values.
 
 prior_ref <- as.Date(prior$reference_date[1])
 cat("\n=== REGRESSION CHECK: recompute", as.character(prior_ref), "===\n")
@@ -204,14 +197,15 @@ recomputed <- calculate_affordability(zillow_data, cbsa_cost_rates, income_data,
                                       population_data, prior_ref)
 
 cmp <- prior %>%
-  select(CBSA_CODE, CBSA_NAME, old_price = price_ttm,
+  rename(any_of(c(price = "price_ttm"))) %>%
+  select(CBSA_CODE, CBSA_NAME, old_price = price,
          old_ratio = renter_affordability_ratio) %>%
-  inner_join(recomputed %>% select(CBSA_CODE, price_ttm, renter_affordability_ratio),
+  inner_join(recomputed %>% select(CBSA_CODE, price, renter_affordability_ratio),
              by = "CBSA_CODE") %>%
-  mutate(price_pct = abs(price_ttm - old_price) / old_price,
+  mutate(price_pct = abs(price - old_price) / old_price,
          ratio_abs = abs(renter_affordability_ratio - old_ratio))
 
-cat("  price_ttm — median abs diff:", sprintf("%.3f%%", 100 * median(cmp$price_pct)),
+cat("  price     — median abs diff:", sprintf("%.3f%%", 100 * median(cmp$price_pct)),
     "| max:", sprintf("%.2f%%", 100 * max(cmp$price_pct)), "\n")
 cat("  ratio     — median abs diff:", sprintf("%.5f", median(cmp$ratio_abs)),
     "| max:", sprintf("%.5f", max(cmp$ratio_abs)), "\n")
@@ -255,7 +249,9 @@ affordability_current %>% arrange(renter_affordability_ratio) %>%
          median_income_renters, total_annual_cost) %>%
   head(10) %>% as.data.frame() %>% print()
 
-qoq <- prior %>%
+# Against the prior quarter recomputed from current Zillow data, so Zillow
+# revisions don't show up as quarter-on-quarter change
+qoq <- recomputed %>%
   select(CBSA_CODE, q_prior = renter_affordability_ratio) %>%
   inner_join(affordability_current %>% select(CBSA_CODE, q_current = renter_affordability_ratio),
              by = "CBSA_CODE") %>%

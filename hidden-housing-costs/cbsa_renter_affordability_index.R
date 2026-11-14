@@ -5,7 +5,6 @@ library(readxl)
 library(tidycensus)
 library(sf)
 library(openxlsx)
-library(zoo)
 library(spatstat)
 library(tigris)
 library(arcgisbinding)
@@ -359,19 +358,11 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
          "Available dates near this: ", paste(available, collapse = ", "))
   }
   
-  # Get Zillow data for reference date (with 12-month trailing average)
+  # Zillow values for the reference month. Zillow's series are already
+  # smoothed and seasonally adjusted, so no further averaging is applied.
   zillow_month <- zillow_df %>%
-    filter(date <= reference_date) %>%
-    group_by(GEOID) %>%
-    arrange(date) %>%
-    mutate(
-      mortgage_ttm = rollmean(mortgage_payment_annual, k = 12, align = "right", fill = NA),
-      price_ttm    = rollmean(home_price,              k = 12, align = "right", fill = NA)
-    ) %>%
     filter(date == reference_date) %>%
-    ungroup() %>%
-    filter(!is.na(mortgage_ttm), !is.na(price_ttm)) %>%
-    select(GEOID, mortgage_ttm, price_ttm)
+    select(GEOID, mortgage_annual = mortgage_payment_annual, price = home_price)
   
   cat("  Zillow data for", as.character(reference_date), ":", nrow(zillow_month), "metros\n")
   
@@ -382,20 +373,20 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
     left_join(population_df, by = c("CBSA_CODE" = "GEOID")) %>%
     mutate(
       # Apply cost rates to current Zillow prices
-      annual_insurance = med_ins_rate   * price_ttm,
-      annual_hoa       = med_hoa_rate   * price_ttm,
-      annual_tax       = med_tax_rate   * price_ttm,
-      annual_elec      = med_elec_rate  * price_ttm,
-      annual_gas       = med_gas_rate   * price_ttm,
-      annual_water     = med_water_rate * price_ttm,
-      annual_fuel      = med_fuel_rate  * price_ttm,
+      annual_insurance = med_ins_rate   * price,
+      annual_hoa       = med_hoa_rate   * price,
+      annual_tax       = med_tax_rate   * price,
+      annual_elec      = med_elec_rate  * price,
+      annual_gas       = med_gas_rate   * price,
+      annual_water     = med_water_rate * price,
+      annual_fuel      = med_fuel_rate  * price,
       
       # Total annual housing cost
-      total_annual_cost = mortgage_ttm + annual_insurance + annual_tax +
+      total_annual_cost = mortgage_annual + annual_insurance + annual_tax +
         annual_elec + annual_gas + annual_water + annual_fuel,
       
       # Component affordability ratios
-      mortgage_burden   = mortgage_ttm  / median_income_renters,
+      mortgage_burden   = mortgage_annual  / median_income_renters,
       insurance_burden  = annual_insurance / median_income_renters,
       hoa_burden        = annual_hoa     / median_income_renters,
       tax_burden        = annual_tax     / median_income_renters,
@@ -413,7 +404,7 @@ calculate_affordability <- function(zillow_df, cost_rates_df, income_df, populat
     ) %>%
     select(
       CBSA_CODE, CBSA_NAME, reference_date, population, n_units,
-      median_income_renters, price_ttm, mortgage_ttm,
+      median_income_renters, price, mortgage_annual,
       renter_affordability_ratio, mortgage_burden, insurance_burden,
       tax_burden, elec_burden, gas_burden, fuel_burden, wat_burden, utility_burden, hoa_burden,
       total_annual_cost, annual_insurance, annual_tax, annual_elec,
@@ -490,8 +481,8 @@ cat("  National renter affordability ratio:",
     round(national_current$renter_affordability_ratio, 3), "\n")
 cat("  National median renter income:",
     format(round(national_current$median_income_renters), big.mark = ","), "\n")
-cat("  National typical home price (TTM):",
-    format(round(national_current$price_ttm), big.mark = ","), "\n")
+cat("  National typical home price:",
+    format(round(national_current$price), big.mark = ","), "\n")
 cat("  National total annual housing cost:",
     format(round(national_current$total_annual_cost), big.mark = ","), "\n")
 
@@ -635,7 +626,7 @@ cat("\n=== NATIONAL AFFORDABILITY TIME SERIES ===\n")
 cat("Months:", nrow(national_timeseries), "\n")
 national_timeseries %>%
   select(reference_date, renter_affordability_ratio,
-         median_income_renters, price_ttm, total_annual_cost) %>%
+         median_income_renters, price, total_annual_cost) %>%
   print(n = Inf)
 
 write.xlsx(

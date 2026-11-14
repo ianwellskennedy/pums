@@ -23,8 +23,8 @@ columns <- c(
   population                 = "Population",
   n_units                    = "Housing units",
   median_income_renters      = "Median Household Income: Renters",
-  price_ttm                  = "Typical-value Home Price (from Zillow)",
-  mortgage_ttm               = "Total annual mortgage payment on purchase of a typical-value home**",
+  price                  = "Typical-value Home Price (from Zillow)",
+  mortgage_annual               = "Total annual mortgage payment on purchase of a typical-value home**",
   renter_affordability_ratio = "Total annual payment as a share of renters' median household income",
   mortgage_burden            = "Mortgage payment as a share of renters' median household income",
   insurance_burden           = "Insurance bill as a share of renters' median household income",
@@ -80,12 +80,12 @@ addStyle(wb, 1, createStyle(fontName = "Avenir Book", textDecoration = "bold", w
 addStyle(wb, 1, header_style(border = c("top", "bottom")), rows = 1,
          cols = col_of("median_income_renters"))
 addStyle(wb, 1, header_style("#9BBB59", c("top", "bottom", "right")), rows = 1,
-         cols = col_of("price_ttm"))
+         cols = col_of("price"))
 addStyle(wb, 1, header_style("#8064A2", "bottom"), rows = 1,
          cols = col_of("annual_insurance"):col_of("annual_hoa"))
 setRowHeights(wb, 1, rows = 1, heights = 55.8)
 
-dollar_cols  <- col_of(c("median_income_renters", "price_ttm", "mortgage_ttm",
+dollar_cols  <- col_of(c("median_income_renters", "price", "mortgage_annual",
                          "total_annual_cost", "annual_insurance", "annual_tax", "annual_elec",
                          "annual_gas", "annual_water", "annual_fuel", "annual_hoa"))
 percent_cols <- col_of("renter_affordability_ratio"):col_of("hoa_burden")
@@ -107,9 +107,8 @@ setColWidths(wb, 1, cols = seq_along(headers), widths = widths)
 
 # 4. SOURCES & METHODOLOGY TAB ----
 
-ttm_from <- format(seq(ref_date + 1, by = "-12 months", length.out = 2)[2], "%B %Y")
-ttm_to   <- format(ref_date, "%B %Y")
-acs      <- config$acs_year
+ref_month <- format(ref_date, "%B %Y")
+acs       <- config$acs_year
 
 methodology <- tribble(
   ~section, ~text,
@@ -119,8 +118,8 @@ methodology <- tribble(
     "income of renter households in that metro. It answers: could a renter household earning the ",
     "local median afford to buy the typical local home? Higher values mean less affordable."),
   "Reference period", paste0(
-    "Home prices and mortgage payments are 12-month averages for ", ttm_from, " to ", ttm_to,
-    ". Income, population and cost rates are from the ", acs, " American Community Survey (ACS) 1-year estimates."),
+    "Home prices and mortgage payments are Zillow's values for ", ref_month, ". ",
+    "Income, population and cost rates are from the ", acs, " American Community Survey (ACS) 1-year estimates."),
   "Coverage", paste0(
     n_rows, " metro areas (2023 core-based statistical areas): those with both a Zillow metro series ",
     "and ACS 1-year estimates."),
