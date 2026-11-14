@@ -81,12 +81,13 @@ calculate_cost_rates <- function(df) {
 }
 
 #' Clean Zillow time series data
-clean_zillow_timeseries <- function(filepath, value_col_name) {
+#' region_type: "msa" for metros (default), "country" for the national row
+clean_zillow_timeseries <- function(filepath, value_col_name, region_type = "msa") {
   read_csv(filepath, show_col_types = FALSE) %>%
     # Remove leading "X" from date columns
     rename_with(~str_remove(., "^X")) %>%
-    # Keep only MSA geography
-    filter(RegionType == "msa") %>%
+    # Keep only the requested geography (metro vs. national)
+    filter(RegionType == region_type) %>%
     # Pivot all date columns (YYYY-MM-DD format)
     pivot_longer(
       cols = matches("^\\d{4}-\\d{2}-\\d{2}$"),
@@ -166,6 +167,22 @@ cat("  Date range:", as.character(min(zillow_data$date)), "to", as.character(max
 cat("  Reference month (", as.character(config$reference_month), ") present?:",
     config$reference_month %in% zillow_data$date, "\n")
 
+# National ("United States") Zillow series — same files, country-level row.
+# GEOID is set to the synthetic national code "00000" so the national data can
+# reuse calculate_affordability() as if the nation were a single CBSA.
+zillow_payments_us <- clean_zillow_timeseries(config$zillow_payments, "mortgage_payment", region_type = "country")
+zillow_prices_us   <- clean_zillow_timeseries(config$zillow_prices,   "home_price",       region_type = "country")
+
+zillow_data_us <- zillow_payments_us %>%
+  inner_join(zillow_prices_us, by = c("zillow_metro_code", "date")) %>%
+  mutate(
+    mortgage_payment_annual = mortgage_payment * 12,
+    GEOID                   = "00000"
+  ) %>%
+  select(GEOID, date, mortgage_payment_annual, home_price)
+
+cat("✓ National Zillow series loaded:", nrow(zillow_data_us), "months\n")
+
 # 4. LOAD PUMS DATA ----
 
 pums_vars <- c(
@@ -214,6 +231,27 @@ population_data <- get_acs(
   mutate(GEOID = as.character(GEOID))
 
 cat("✓ Population data loaded:", nrow(population_data), "CBSAs\n")
+
+# National income and population (geography = "us"), relabeled to GEOID "00000"
+income_data_us <- get_acs(
+  geography = "us",
+  variables = "B25119_003",  # Median household income - renter occupied
+  year      = config$acs_year,
+  survey    = "acs1",
+  key       = config$census_api_key
+) %>%
+  transmute(GEOID = "00000", median_income_renters = estimate)
+
+population_data_us <- get_acs(
+  geography = "us",
+  variables = "B01003_001",  # Total population
+  year      = config$acs_year,
+  survey    = "acs1",
+  key       = config$census_api_key
+) %>%
+  transmute(GEOID = "00000", population = estimate)
+
+cat("✓ National income & population loaded (US)\n")
 
 # 6. PROCESS PUMS DATA ----
 
@@ -282,6 +320,33 @@ cat("  Tax rate range:",
     round(max(cbsa_cost_rates$med_tax_rate, na.rm = TRUE), 4), "\n")
 cat("  CBSAs with missing insurance rates:", sum(is.na(cbsa_cost_rates$med_ins_rate)), "\n")
 cat("  CBSAs with missing HOA rates:",       sum(is.na(cbsa_cost_rates$med_hoa_rate)), "\n")
+
+# National cost rates — same weighted medians as above, but pooled across ALL
+# PUMS units nationally (weight = WGTP directly; no CBSA crosswalk / alloc factor).
+# Note: the ", CA" Prop-13 tax override is intentionally NOT applied here — the
+# national tax rate is the raw PUMS median across all states, which already
+# includes California units at their actual (low) effective rates.
+national_cost_rates <- pums_processed %>%
+  summarize(
+    n_units = sum(WGTP, na.rm = TRUE),
+    med_ins_rate = weighted.median(
+      ins_rate[ins_rate > 0], w = WGTP[ins_rate > 0], na.rm = TRUE
+    ),
+    med_hoa_rate = weighted.median(
+      hoa_rate[hoa_rate > 0], w = WGTP[hoa_rate > 0], na.rm = TRUE
+    ),
+    med_tax_rate   = weighted.median(tax_rate,   w = WGTP, na.rm = TRUE),
+    med_elec_rate  = weighted.median(elec_rate,  w = WGTP, na.rm = TRUE),
+    med_gas_rate   = weighted.median(gas_rate,   w = WGTP, na.rm = TRUE),
+    med_water_rate = weighted.median(water_rate, w = WGTP, na.rm = TRUE),
+    med_fuel_rate  = weighted.median(fuel_rate,  w = WGTP, na.rm = TRUE)
+  ) %>%
+  mutate(
+    CBSA_CODE = "00000",
+    CBSA_NAME = "United States"
+  )
+
+cat("✓ National cost rates calculated (pooled across all PUMS units)\n")
 
 # 8. CALCULATE AFFORDABILITY ----
 
@@ -408,12 +473,40 @@ affordability_current %>%
   head(10) %>%
   print()
 
+# National affordability for the current month — built directly from national
+# components (national cost rates + US Zillow row + US renter income), reusing
+# the same calculate_affordability() logic with the nation as a single "CBSA".
+national_current <- calculate_affordability(
+  zillow_data_us,
+  national_cost_rates,
+  income_data_us,
+  population_data_us,
+  config$reference_month
+)
+
+cat("\n=== NATIONAL AFFORDABILITY (United States) ===\n")
+cat("  Reference month:", as.character(config$reference_month), "\n")
+cat("  National renter affordability ratio:",
+    round(national_current$renter_affordability_ratio, 3), "\n")
+cat("  National median renter income:",
+    format(round(national_current$median_income_renters), big.mark = ","), "\n")
+cat("  National typical home price (TTM):",
+    format(round(national_current$price_ttm), big.mark = ","), "\n")
+cat("  National total annual housing cost:",
+    format(round(national_current$total_annual_cost), big.mark = ","), "\n")
+
 # 10. OUTPUT ----
 
 # Current month snapshot
 write.xlsx(
   affordability_current,
   paste0(config$output_dir, "cbsa_affordability_", format(config$reference_month, "%Y_%m"), ".xlsx")
+)
+
+# National snapshot
+write.xlsx(
+  national_current,
+  paste0(config$output_dir, "national_affordability_", format(config$reference_month, "%Y_%m"), ".xlsx")
 )
 
 cat("\n✓ Affordability index calculated for", nrow(affordability_current), "CBSAs\n")
@@ -527,3 +620,27 @@ write.xlsx(
   affordability_wide,
   paste0(config$output_dir, "cbsa_affordability_timeseries_wide.xlsx")
 )
+
+# National affordability time series — same monthly generator, national inputs
+national_timeseries <- generate_monthly_timeseries(
+  zillow_data_us,
+  national_cost_rates,
+  income_data_us,
+  population_data_us,
+  start_date = as.Date("2020-01-01"),
+  end_date   = config$reference_month
+)
+
+cat("\n=== NATIONAL AFFORDABILITY TIME SERIES ===\n")
+cat("Months:", nrow(national_timeseries), "\n")
+national_timeseries %>%
+  select(reference_date, renter_affordability_ratio,
+         median_income_renters, price_ttm, total_annual_cost) %>%
+  print(n = Inf)
+
+write.xlsx(
+  national_timeseries,
+  paste0(config$output_dir, "national_affordability_timeseries.xlsx")
+)
+
+cat("\n✓ National affordability index saved (snapshot + time series)\n")
