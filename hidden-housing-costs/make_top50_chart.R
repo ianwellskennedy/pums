@@ -28,6 +28,10 @@ systemfonts::register_font("Kaushan Script", config$byline)
 breaks  <- c(.40, .50, .60, .70, .80, .90)
 palette <- c("#4575B4", "#91BFDB", "#E0F3F8", "#FFFFBF", "#FEE090", "#FC8D59", "#D73027")
 change_colours <- c(worse = "#D73027", better = "#4575B4")
+# Line items of the total payment, left to right along each bar
+line_items <- c(mortgage_burden = "Mortgage", tax_burden = "Property tax", insurance_burden = "Insurance",
+                utility_burden = "Utilities", wat_burden = "Water")
+item_colours <- setNames(c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"), line_items)
 
 # 1. DATA ----
 
@@ -70,14 +74,15 @@ cat("Median change, top", config$n_metros, ":", sprintf("%+.2f pts", median(top$
 
 # 2. CHART ----
 
-bar_panel <- function(data, strip, label_fmt, x_labels, show_metros) {
+# `bars` overrides the single-colour bars (data$fill), e.g. with stacked segments
+bar_panel <- function(data, strip, label_fmt, x_labels, show_metros, bars = NULL) {
   room <- 1.14 * max(abs(data$value))
   ggplot(data, aes(value, metro)) +
     geom_vline(xintercept = 0, linewidth = .4, colour = "black") +
-    geom_col(aes(fill = fill), width = .72, colour = "black", linewidth = .25) +
+    (bars %||% list(geom_col(aes(fill = fill), width = .72, colour = "black", linewidth = .25),
+                    scale_fill_identity())) +
     geom_text(aes(label = sprintf(label_fmt, value), hjust = if_else(value < 0, 1.15, -.15)),
               family = config$font, size = 3.1) +
-    scale_fill_identity() +
     scale_x_continuous(labels = x_labels, limits = c(min(0, -room * (min(data$value) < 0)), room),
                        expand = expansion(mult = c(0, .01))) +
     labs(title = strip, x = NULL, y = NULL) +
@@ -94,10 +99,29 @@ bar_panel <- function(data, strip, label_fmt, x_labels, show_metros) {
     )
 }
 
+# Level panel: one segment per line item, total at the bar end
+items <- top %>%
+  select(metro, all_of(names(line_items))) %>%
+  pivot_longer(-metro, names_to = "item", values_to = "value") %>%
+  mutate(value = 100 * value, item = factor(line_items[item], levels = line_items))
+totals <- top %>% transmute(metro, value = 100 * renter_affordability_ratio)
+
 level_plot <- bar_panel(
-  top %>% transmute(metro, value = 100 * renter_affordability_ratio, fill = palette[as.integer(class)]),
-  "Share of renters' median household income\nneeded for the total payment, Q3 2026",
-  "%.1f%%", function(x) paste0(x, "%"), show_metros = TRUE)
+  totals, "Share of renters' median household income\nneeded for the total payment, Q3 2026",
+  "%.1f%%", function(x) paste0(x, "%"), show_metros = TRUE,
+  bars = list(geom_col(data = items, aes(fill = item), width = .72, colour = "white", linewidth = .3,
+                       position = position_stack(reverse = TRUE)),
+              scale_fill_manual(values = item_colours, name = NULL),
+              guides(fill = guide_legend(nrow = 1)))) +
+  theme(legend.position = "top", legend.justification = "left", legend.margin = margin(0, 0, 0, 0),
+        legend.text = element_text(size = 10, margin = margin(l = 4)), legend.key.size = unit(11, "pt"),
+        legend.key.spacing.x = unit(16, "pt"))
+# Draw the legend above the panels so both panels keep the same layout and their rows line up
+pdf(NULL)  # throwaway device: no Rplots.pdf; it lacks the font, ragg draws the PNG
+level_grob <- suppressWarnings(ggplotGrob(level_plot))
+invisible(dev.off())
+legend     <- level_grob$grobs[[which(level_grob$layout$name == "guide-box-top")]]
+level_plot <- level_plot + theme(legend.position = "none")
 change_plot <- bar_panel(
   top %>% transmute(metro, value = change, fill = change_colours[if_else(change > 0, "worse", "better")]),
   "Change since Q2 2026\n(percentage points)",
@@ -114,12 +138,15 @@ grid::grid.rect(gp = grid::gpar(fill = "white", col = NA))
 text("How affordable is a typical home for renters in the 50 largest metros?", .02, .985, 17, "bold")
 text("By: Ian Kennedy", .98, .985, 15, family = "Kaushan Script", just = c("right", "top"))
 text(paste0("Total annual payment on a 'typical-value' home* as a share of renters' median household income,\n",
-            "and the change since last quarter. Sorted from least to most affordable."), .02, .958, 11)
-print(level_plot,  vp = grid::viewport(.01, .065, .66, .855, just = c("left", "bottom")))
-print(change_plot, vp = grid::viewport(.68, .065, .30, .855, just = c("left", "bottom")))
+            "split by line item, and the change since last quarter. Sorted from least to most affordable."), .02, .958, 11)
+grid::pushViewport(grid::viewport(.138, .92, .5, .02, just = c("left", "top")))
+grid::grid.draw(legend)
+grid::popViewport()
+print(level_plot,  vp = grid::viewport(.01, .065, .66, .83, just = c("left", "bottom")))
+print(change_plot, vp = grid::viewport(.68, .065, .30, .83, just = c("left", "bottom")))
 text(paste0("*20% down payment on the typical value for a home in the 33rd to 67th percentile range. ",
             "Payment includes mortgage at current rates,\nhomeowner's insurance, property taxes, utilities, ",
-            "and water. Q2 recomputed on current Zillow data.\n",
-            "Source: Zillow; US Census Bureau, ", config$acs_year, " ACS PUMS via tidycensus."), .02, .052, 8.5)
+            "and water.\nUtilities = electricity, gas and other fuels. Q2 recomputed on current Zillow data.\n",
+            "Source: Zillow; US Census Bureau, ", config$acs_year, " ACS PUMS via tidycensus."), .02, .055, 8.5)
 invisible(dev.off())
 cat("Saved", config$output, "\n")
